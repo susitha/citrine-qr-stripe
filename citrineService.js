@@ -3,8 +3,8 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const BASE = process.env.CITRINE_URL;
-
+const BASE = process.env.CITRINE_SERVER;
+const HASURA_URL = "http://localhost:8090/v1/graphql"; // Internal Hasura URL
 
 /*
 Remote Start
@@ -33,11 +33,32 @@ export async function remoteStop(transactionId) {
 
 
 /*
-Get ALL transactions
+Get ALL transactions (GraphQL)
 */
 export async function getTransactions() {
-  const res = await fetch(`${BASE}/data/transactions`);
-  const data = await res.json();
+  try {
+    const query = `
+      query {
+        Transactions {
+          id
+          stationId
+          isActive
+          transactionId
+          startTime
+        }
+      }
+    `;
 
-  return data.content || [];
+    const res = await fetch(HASURA_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+
+    const data = await res.json();
+    return data.data?.Transactions || [];
+  } catch (err) {
+    console.error("Error fetching transactions (GraphQL):", err.message);
+    return [];
+  }
 }
