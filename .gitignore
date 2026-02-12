@@ -1,0 +1,49 @@
+# dependencies
+node_modules/
+
+# logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# dotenv (VERY IMPORTANT – contains Stripe keys)
+.env
+.env.*
+!.env.example
+
+# build / output
+dist/
+build/
+coverage/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# temp
+tmp/
+temp/
+
+# misc
+*.pid
+*.seed
+*.lock
+
+# mac
+.AppleDouble
+.LSOverride
+
+# test artifacts
+.nyc_output/
+
+# optional
+package-lock.json.bak
