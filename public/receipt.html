@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Charging Receipt | ChargePoint</title>
+    <link rel="stylesheet" href="index.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        .receipt-card {
+            border-top: 1px dashed rgba(255, 255, 255, 0.2);
+            margin-top: 20px;
+            padding-top: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .receipt-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.95rem;
+        }
+
+        .row-label {
+            color: var(--text-dim);
+        }
+
+        .row-val {
+            font-weight: 600;
+        }
+
+        .total-row {
+            margin-top: 10px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            padding-top: 15px;
+            font-size: 1.25rem;
+        }
+
+        .success-icon {
+            font-size: 3rem;
+            color: var(--accent-emerald);
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="glass-container">
+        <header>
+            <div class="success-icon">✓</div>
+            <h2>Charging Session Summary</h2>
+            <p id="transaction-label" class="badge">Transaction: ---</p>
+        </header>
+
+        <main>
+            <div class="receipt-card">
+                <div class="receipt-row">
+                    <span class="row-label">Station ID</span>
+                    <span id="station-id" class="row-val">---</span>
+                </div>
+                <div class="receipt-row">
+                    <span class="row-label">Energy Delivered</span>
+                    <span id="kwh" class="row-val">0.00 kWh</span>
+                </div>
+                <div class="receipt-row">
+                    <span class="row-label">Duration</span>
+                    <span id="duration" class="row-val">00:00:00</span>
+                </div>
+                <div class="receipt-row total-row">
+                    <span class="row-label">Total Cost</span>
+                    <span id="cost" class="row-val">$0.00</span>
+                </div>
+            </div>
+
+            <a href="index.html" class="primary-btn" style="text-decoration: none; margin-top: 20px; display: block;">
+                Done
+            </a>
+        </main>
+
+        <footer>
+            <p>A digital receipt has been sent to your account.</p>
+        </footer>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const transactionId = urlParams.get('transactionId');
+
+        async function loadReceipt() {
+            if (!transactionId) {
+                window.location.href = 'index.html';
+                return;
+            }
+
+            document.getElementById('transaction-label').textContent = `Transaction: ${transactionId}`;
+
+            try {
+                const res = await fetch(`/api/active-session/${transactionId}`);
+                const data = await res.json();
+
+                if (data.error) throw new Error(data.error);
+
+                document.getElementById('station-id').textContent = data.stationId;
+                document.getElementById('kwh').textContent = `${Number(data.totalKwh).toFixed(2)} kWh`;
+
+                // Using 0.30 rate
+                const cost = Number(data.totalKwh) * 0.30;
+                document.getElementById('cost').textContent = `$${cost.toFixed(2)}`;
+
+                if (data.startTime && data.endTime) {
+                    const start = new Date(data.startTime);
+                    const end = new Date(data.endTime);
+                    const diff = Math.floor((end - start) / 1000);
+                    const h = Math.floor(diff / 3600).toString().padStart(2, '0');
+                    const m = Math.floor((diff % 3600) / 60).toString().padStart(2, '0');
+                    const s = (diff % 60).toString().padStart(2, '0');
+                    document.getElementById('duration').textContent = `${h}:${m}:${s}`;
+                }
+
+            } catch (err) {
+                console.error('Failed to load receipt:', err);
+                alert('Could not retrieve receipt data.');
+            }
+        }
+
+        loadReceipt();
+    </script>
+</body>
+
+</html>

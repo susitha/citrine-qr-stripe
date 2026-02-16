@@ -9,12 +9,23 @@ const HASURA_URL = "http://localhost:8090/v1/graphql"; // Internal Hasura URL
 /*
 Remote Start
 */
-export async function remoteStart(chargerId) {
+export async function remoteStart(chargerId, idTag = "DRIVER_001") {
   const url =
     `${BASE}/ocpp/1.6/evdriver/remoteStartTransaction` +
     `?identifier=${chargerId}&tenantId=1`;
 
-  const res = await fetch(url, { method: "POST" });
+  console.log(`[Citrine] Requesting Remote Start: Charger=${chargerId}, idTag=${idTag}`);
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.CITRINE_API_KEY}`,
+    },
+    body: JSON.stringify({
+      idTag: idTag,
+      connectorId: 1,
+    }),
+  });
 
   return res.json();
 }
@@ -23,12 +34,21 @@ export async function remoteStart(chargerId) {
 /*
 Remote Stop
 */
-export async function remoteStop(transactionId) {
+export async function remoteStop(stationId, transactionId) {
   const url =
     `${BASE}/ocpp/1.6/evdriver/remoteStopTransaction` +
-    `?transactionId=${transactionId}&tenantId=1`;
+    `?identifier=${stationId}&tenantId=1`;
 
-  await fetch(url, { method: "POST" });
+  await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.CITRINE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      transactionId: parseInt(transactionId),
+    }),
+  });
 }
 
 
@@ -41,21 +61,29 @@ export async function getTransactions() {
       query {
         Transactions {
           id
+          transactionId
           stationId
           isActive
-          transactionId
           startTime
+          endTime
+          totalKwh
+          totalCost
         }
       }
     `;
 
     const res = await fetch(HASURA_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.CITRINE_API_KEY}`
+      },
       body: JSON.stringify({ query }),
     });
 
     const data = await res.json();
+    //console.log("[Citrine] GraphQL Response:", JSON.stringify(data, null, 2));
+
     return data.data?.Transactions || [];
   } catch (err) {
     console.error("Error fetching transactions (GraphQL):", err.message);

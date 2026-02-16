@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChargePoint Premium | EV Charging</title>
+    <link rel="stylesheet" href="index.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="glass-container">
+        <header>
+            <div class="logo">⚡ ChargePoint<span>Premium</span></div>
+            <div id="charger-id" class="badge">Charger: Loading...</div>
+        </header>
+
+        <main>
+            <div class="status-card">
+                <div class="status-indicator" id="status-dot"></div>
+                <h2 id="status-text">Checking Status...</h2>
+                <p id="status-desc">Please wait while we connect to the station.</p>
+            </div>
+
+            <div class="action-section" id="action-section">
+                <!-- Member ID Input -->
+                <div id="user-input-container" style="display: none; margin-bottom: 20px;">
+                    <input type="text" id="user-id-input" placeholder="Enter Member ID / User Tag"
+                        style="width: 100%; padding: 15px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.05); color: white; font-family: inherit; font-size: 1rem; text-align: center;">
+                </div>
+
+                <!-- Dynamic content based on status -->
+                <button id="start-btn" class="primary-btn pulse" style="display: none;">
+                    Start Charging
+                </button>
+                <div id="active-session-info" class="session-info" style="display: none;">
+                    <p>Session in progress...</p>
+                    <a href="dashboard.html" class="secondary-btn">View Dashboard</a>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>&copy; 2026 ChargePoint Premium. All rights reserved.</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

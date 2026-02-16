@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Generator | ChargePoint</title>
+    <link rel="stylesheet" href="index.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        .qr-card {
+            background: white;
+            padding: 30px;
+            border-radius: 20px;
+            margin-top: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            color: #000;
+        }
+
+        .qr-card img {
+            width: 250px;
+            height: 250px;
+            border: 1px solid #eee;
+        }
+
+        .qr-label {
+            font-weight: 600;
+            font-size: 1.2rem;
+            color: #111;
+        }
+
+        .qr-subtext {
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: -10px;
+        }
+
+        input {
+            width: 100%;
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            background: rgba(255, 255, 255, 0.05);
+            color: white;
+            font-family: inherit;
+            font-size: 1rem;
+            text-align: center;
+        }
+
+        .download-btn {
+            background: var(--primary-gradient);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="glass-container">
+        <header>
+            <div class="logo">⚡ Label<span>Generator</span></div>
+            <p>Enter the Station ID to generate a QR sticker.</p>
+        </header>
+
+        <main>
+            <input type="text" id="charger-input" placeholder="e.g. A20223115843" value="A20223115843">
+
+            <button id="gen-btn" class="primary-btn" style="margin-top: 10px;">Generate QR Code</button>
+
+            <div id="qr-container" class="qr-card" style="display: none;">
+                <div class="qr-label">SCAN TO CHARGE</div>
+                <img id="qr-img" src="" alt="QR Code">
+                <div id="qr-display-id" class="qr-subtext">ID: ---</div>
+                <a id="download-link" href="#" download="qr-code.png" class="download-btn">Download Label</a>
+            </div>
+        </main>
+
+        <footer>
+            <p>Print these codes and stick them on your chargers.</p>
+        </footer>
+    </div>
+
+    <script>
+        const input = document.getElementById('charger-input');
+        const btn = document.getElementById('gen-btn');
+        const container = document.getElementById('qr-container');
+        const img = document.getElementById('qr-img');
+        const displayId = document.getElementById('qr-display-id');
+        const downloadLink = document.getElementById('download-link');
+
+        btn.addEventListener('click', () => {
+            const chargerId = input.value.trim();
+            if (!chargerId) {
+                alert('Please enter a Station ID');
+                return;
+            }
+
+            const qrUrl = `/api/qr/${encodeURIComponent(chargerId)}`;
+
+            img.src = qrUrl;
+            displayId.textContent = `ID: ${chargerId}`;
+            downloadLink.href = qrUrl;
+            downloadLink.download = `charge-qr-${chargerId}.png`;
+
+            container.style.display = 'flex';
+        });
+    </script>
+</body>
+
+</html>
