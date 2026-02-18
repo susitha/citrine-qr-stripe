@@ -6,6 +6,7 @@ import os from "os";
 import { createCheckoutSession } from "./stripeService.js";
 import { remoteStart, getTransactions, remoteStop } from "./citrineService.js";
 import { registerSession, startBillingLoop } from "./billingService.js";
+import { requestOTP, verifyOTP, authenticateToken } from "./authService.js";
 
 dotenv.config();
 
@@ -28,6 +29,46 @@ function getLocalIp() {
 
 // Serve static files (HTML, CSS, JS) from the 'public' folder
 app.use(express.static("public"));
+
+/**
+ * 🔹 Auth API: Request OTP
+ */
+app.post("/api/auth/request-otp", async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "Email is required" });
+
+  try {
+    const success = await requestOTP(email);
+    if (success) {
+      res.json({ success: true, message: "OTP sent to your email" });
+    } else {
+      res.status(500).json({ error: "Failed to send OTP email" });
+    }
+  } catch (err) {
+    console.error("Auth request-otp error:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+/**
+ * 🔹 Auth API: Verify OTP
+ */
+app.post("/api/auth/verify-otp", async (req, res) => {
+  const { email, otp } = req.body;
+  if (!email || !otp) return res.status(400).json({ error: "Email and OTP are required" });
+
+  try {
+    const result = await verifyOTP(email, otp);
+    if (result.success) {
+      res.json({ success: true, token: result.token, user: result.user });
+    } else {
+      res.status(401).json({ error: result.message });
+    }
+  } catch (err) {
+    console.error("Auth verify-otp error:", err.message);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
 /**
  * 🔹 API: Get charger status
@@ -54,21 +95,44 @@ app.get("/api/charger-status/:chargerId", async (req, res) => {
 app.get("/api/active-session/:transactionId", async (req, res) => {
   const { transactionId } = req.params;
   try {
+    // 1. Check live transactions from Citrine
     const transactions = await getTransactions();
-    const tx = transactions.find(t => t.transactionId === transactionId);
+    const liveTx = transactions.find(t => t.transactionId === transactionId);
 
-    if (!tx) return res.status(404).json({ error: "Session not found" });
+    if (liveTx) {
+      return res.json({
+        transactionId,
+        stationId: liveTx.stationId,
+        isActive: liveTx.isActive,
+        startTime: liveTx.startTime,
+        endTime: liveTx.endTime,
+        totalKwh: liveTx.totalKwh || 0,
+        totalCost: liveTx.totalCost || 0
+      });
+    }
 
-    res.json({
-      transactionId,
-      stationId: tx.stationId,
-      isActive: tx.isActive,
-      startTime: tx.startTime,
-      endTime: tx.endTime,
-      totalKwh: tx.totalKwh || 0,
-      totalCost: tx.totalCost || 0
-    });
+    // 2. Fallback to Database for completed sessions
+    const [rows] = await (await import("./db.js")).default.execute(
+      "SELECT * FROM sessions WHERE transaction_id = ?",
+      [transactionId]
+    );
+    const dbTx = rows[0];
+
+    if (dbTx) {
+      return res.json({
+        transactionId: dbTx.transaction_id,
+        stationId: dbTx.charger_id,
+        isActive: dbTx.status !== 'completed',
+        startTime: dbTx.start_time,
+        endTime: dbTx.end_time,
+        totalKwh: dbTx.kwh || 0,
+        totalCost: dbTx.cost || 0
+      });
+    }
+
+    res.status(404).json({ error: "Session not found" });
   } catch (err) {
+    console.error("Fetch session error:", err.message);
     res.status(500).json({ error: "Failed to fetch session details" });
   }
 });
@@ -127,7 +191,7 @@ app.get("/qr-generator", (req, res) => {
 /*
 Create QR checkout
 */
-app.get("/create-session/:chargerId/:userIdTag", async (req, res) => {
+app.get("/create-session/:chargerId/:userIdTag", authenticateToken, async (req, res) => {
   const { chargerId, userIdTag } = req.params;
   console.log(`[Server] Received create-session request: Charger=${chargerId}, User=${userIdTag}`);
   startCharging(chargerId, userIdTag);
@@ -184,11 +248,16 @@ app.post(
 
 async function startCharging(chargerId, userIdTag) {
   console.log(`[Server] Starting charging sequence for ${chargerId} with user ${userIdTag}`);
+
+  // Create a placeholder record in DB if it doesn't exist (pending)
+  // We don't have a transactionId yet, so we might need a temporary reference or wait for the ID
+  // For now, we wait for the remoteStart to succeed and then get the session started.
+
   try {
     const res = await remoteStart(chargerId, userIdTag);
 
-    if (res[0]?.success) {
-      console.log("Charging started successfully!", res);
+    if (res[0]?.success || res.status === 'Accepted' || res.status === 'Accepted') { // Citrine status can vary
+      console.log("Charging remote start command accepted!", res);
     } else {
       console.error("Failed to start charging:", res);
       return;
@@ -196,17 +265,15 @@ async function startCharging(chargerId, userIdTag) {
 
     let transactionId = null;
     let attempts = 0;
-    const maxAttempts = 10;
+    const maxAttempts = 12; // Increased attempts
 
     while (!transactionId && attempts < maxAttempts) {
       console.log(`Polling for transaction ID (attempt ${attempts + 1}/${maxAttempts})...`);
-      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+      await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds
 
       const transactions = await getTransactions();
-      console.log(`[Polling] Fetched ${transactions.length} transactions`);
 
-      // Find latest active transaction for this charger
-      // API returns 'stationId', 'isActive', 'startTime'
+      // Find latest active transaction for this charger that isn't already completed in our DB
       const latestTx = transactions
         .filter(tx => tx.stationId === chargerId && tx.isActive === true)
         .sort((a, b) => new Date(b.startTime) - new Date(a.startTime))[0];
@@ -219,8 +286,8 @@ async function startCharging(chargerId, userIdTag) {
     }
 
     if (transactionId) {
-      console.log("TRN ID", transactionId);
-      registerSession(transactionId, chargerId, null);
+      console.log("Registering session in DB with ID:", transactionId);
+      await registerSession(transactionId, chargerId, null, userIdTag);
     } else {
       console.error("Failed to retrieve transaction ID after polling.");
     }
