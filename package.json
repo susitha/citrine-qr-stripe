@@ -4,17 +4,25 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "concurrently \"node server.js\" \"cd front_end && NEXT_WEBPACK=1 yarn dev --port 3001\""
   },
   "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.993.0",
+    "@aws-sdk/client-sns": "^3.993.0",
     "body-parser": "^1.20.2",
+    "cors": "^2.8.6",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "jsonwebtoken": "^9.0.3",
+    "jwks-rsa": "^3.2.2",
     "mysql2": "^3.17.2",
     "node-fetch": "^3.3.2",
     "nodemailer": "^8.0.1",
     "qrcode": "^1.5.1",
     "stripe": "^12.12.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }

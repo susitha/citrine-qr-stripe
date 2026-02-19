@@ -1,0 +1,408 @@
+"use client"
+
+import { useState, useEffect, useCallback, useRef } from "react"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Progress } from "@/components/ui/progress"
+import { Badge } from "@/components/ui/badge"
+import {
+  Zap,
+  Battery,
+  Clock,
+  BatteryCharging,
+  CircleStop,
+  Loader2,
+  CheckCircle2,
+  RotateCcw,
+} from "lucide-react"
+import { toast } from "sonner"
+
+interface ChargingStepProps {
+  phone: string
+  chargerId: string
+  token: string
+  onReset: () => void
+}
+
+type SessionStatus = "idle" | "starting" | "charging" | "stopping" | "completed" | "stopped"
+
+interface LiveSession {
+  transactionId: string | null
+  stationId: string
+  isActive: boolean
+  startTime: string | null
+  totalKwh: number
+  totalCost: number
+}
+
+export function ChargingStep({ phone, chargerId, token, onReset }: ChargingStepProps) {
+  const [status, setStatus] = useState<SessionStatus>("idle")
+  const [session, setSession] = useState<LiveSession | null>(null)
+  const [elapsedTime, setElapsedTime] = useState("00:00")
+  const [batteryLevel, setBatteryLevel] = useState(25)
+  const startTimeRef = useRef<number | null>(null)
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const stopPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
+    }
+  }, [])
+
+  const pollSession = useCallback(async (transactionId: string) => {
+    try {
+      const response = await fetch(`/api/charging?transactionId=${transactionId}`)
+      const data = await response.json()
+
+      if (data.session) {
+        const s = data.session as LiveSession
+        setSession(s)
+
+        if (!s.isActive) {
+          setStatus("completed")
+          stopPolling()
+        }
+      }
+    } catch {
+      // Silent polling failure
+    }
+  }, [stopPolling])
+
+  // Update elapsed timer every second
+  useEffect(() => {
+    if (status !== "charging" || !startTimeRef.current) return
+
+    const timer = setInterval(() => {
+      const elapsed = Date.now() - startTimeRef.current!
+      const minutes = Math.floor(elapsed / 60000)
+      const seconds = Math.floor((elapsed % 60000) / 1000)
+      setElapsedTime(
+        `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`
+      )
+      // Simulate battery creep
+      setBatteryLevel((prev) => Math.min(prev + 0.05, 100))
+    }, 1000)
+
+    return () => clearInterval(timer)
+  }, [status])
+
+  // Cleanup on unmount
+  useEffect(() => () => stopPolling(), [stopPolling])
+
+  async function startCharging() {
+    setStatus("starting")
+    try {
+      // Step 1: Send start command
+      const response = await fetch("/api/charging", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone, chargerId, token }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        toast.error(data.error || "Failed to start charging")
+        setStatus("idle")
+        return
+      }
+
+      toast.success("Charging command sent!", {
+        description: "Connecting to charger...",
+      })
+
+      // Step 2: Poll for charger status until transaction appears (up to 60s)
+      let transactionId: string | null = null
+      let attempts = 0
+      const maxAttempts = 20
+
+      while (!transactionId && attempts < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 3000))
+        const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
+        const statusData = await statusRes.json()
+
+        if (statusData.chargerStatus?.transactionId) {
+          transactionId = statusData.chargerStatus.transactionId
+        }
+        attempts++
+      }
+
+      if (!transactionId) {
+        toast.error("Could not confirm charging session. Please check charger status.")
+        setStatus("idle")
+        return
+      }
+
+      startTimeRef.current = Date.now()
+      setBatteryLevel(25 + Math.random() * 10)
+      setSession({
+        transactionId,
+        stationId: chargerId,
+        isActive: true,
+        startTime: new Date().toISOString(),
+        totalKwh: 0,
+        totalCost: 0,
+      })
+      setStatus("charging")
+
+      toast.success("Charging started!", {
+        description: `Connected to ${chargerId}`,
+      })
+
+      // Start polling for real-time kWh/cost
+      pollIntervalRef.current = setInterval(() => {
+        pollSession(transactionId!)
+      }, 5000)
+    } catch {
+      toast.error("Failed to start charging session")
+      setStatus("idle")
+    }
+  }
+
+  async function stopCharging() {
+    if (!session?.transactionId) return
+    setStatus("stopping")
+
+    try {
+      const response = await fetch("/api/charging", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chargerId,
+          transactionId: session.transactionId,
+          token,
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        toast.error(data.error || "Failed to stop charging")
+        setStatus("charging")
+        return
+      }
+
+      stopPolling()
+      setStatus("completed")
+      toast.success("Charging stopped!", {
+        description: `Total: ${session.totalKwh.toFixed(2)} kWh`,
+      })
+    } catch {
+      toast.error("Failed to stop charging")
+      setStatus("charging")
+    }
+  }
+
+  const pricePerKwh = 0.30
+
+  // Pre-charging: show start button
+  if (status === "idle") {
+    return (
+      <Card>
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-2 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+            <BatteryCharging className="h-8 w-8 text-primary" />
+          </div>
+          <CardTitle className="text-xl">Ready to Charge</CardTitle>
+          <CardDescription>
+            Your identity is verified. Start charging your vehicle now.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <div className="rounded-lg border border-border/60 bg-secondary/30 p-4">
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">Charger</span>
+                <span className="text-sm font-semibold text-foreground">{chargerId}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">Phone</span>
+                <span className="text-sm font-medium text-foreground">{phone}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">Rate</span>
+                <span className="text-sm font-medium text-foreground">
+                  ${pricePerKwh.toFixed(2)}/kWh
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <Button onClick={startCharging} size="lg" className="w-full text-base">
+            <Zap className="h-5 w-5" />
+            Start Charging
+          </Button>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // Starting / connecting
+  if (status === "starting") {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center gap-4 py-12">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+            <Loader2 className="h-8 w-8 text-primary animate-spin" />
+          </div>
+          <div className="text-center">
+            <p className="text-lg font-semibold text-foreground">Connecting to Charger</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Sending remote start command to {chargerId}...
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // Session completed/stopped
+  if (status === "completed" || status === "stopped") {
+    const kwh = session?.totalKwh || 0
+    const cost = session?.totalCost || kwh * pricePerKwh
+
+    return (
+      <div className="flex flex-col gap-4">
+        <Card>
+          <CardHeader className="text-center">
+            <div className="mx-auto mb-2 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+              <CheckCircle2 className="h-8 w-8 text-primary" />
+            </div>
+            <CardTitle className="text-xl">Charging Complete</CardTitle>
+            <CardDescription>Your session summary is below</CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="rounded-lg border border-border/60 bg-secondary/30 p-4">
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Energy Delivered</span>
+                  <span className="text-lg font-bold text-primary">
+                    {kwh.toFixed(2)} kWh
+                  </span>
+                </div>
+                <div className="h-px bg-border" />
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Duration</span>
+                  <span className="text-sm font-semibold text-foreground">{elapsedTime}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-muted-foreground">Charger</span>
+                  <span className="text-sm font-medium text-foreground">{chargerId}</span>
+                </div>
+                <div className="h-px bg-border" />
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-foreground">Total Cost</span>
+                  <span className="text-lg font-bold text-foreground">
+                    ${cost.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <Button onClick={onReset} variant="outline" className="w-full">
+              <RotateCcw className="h-4 w-4" />
+              Start New Session
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  // Active charging session
+  const kwh = session?.totalKwh || 0
+  const cost = session?.totalCost || kwh * pricePerKwh
+
+  return (
+    <div className="flex flex-col gap-4">
+      <Card>
+        <CardHeader className="text-center">
+          <Badge className="mx-auto mb-2 bg-primary/10 text-primary border-primary/25 px-3 py-1">
+            <span className="relative mr-2 flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
+            </span>
+            Charging in Progress
+          </Badge>
+          <CardTitle className="text-3xl font-bold text-primary font-mono tabular-nums">
+            {kwh.toFixed(2)} kWh
+          </CardTitle>
+          <CardDescription>Energy delivered to your vehicle</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-5">
+          {/* Battery visual */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <Battery className="h-4 w-4" />
+                Battery Level
+              </div>
+              <span className="font-semibold text-foreground">
+                {Math.round(batteryLevel)}%
+              </span>
+            </div>
+            <Progress value={batteryLevel} className="h-3" />
+          </div>
+
+          {/* Stats grid */}
+          <div className="grid grid-cols-3 gap-3">
+            <div className="flex flex-col items-center gap-1 rounded-lg border border-border/60 bg-secondary/30 p-3">
+              <Zap className="h-4 w-4 text-primary" />
+              <span className="text-lg font-bold text-foreground font-mono tabular-nums">
+                {chargerId}
+              </span>
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                Charger
+              </span>
+            </div>
+            <div className="flex flex-col items-center gap-1 rounded-lg border border-border/60 bg-secondary/30 p-3">
+              <Clock className="h-4 w-4 text-primary" />
+              <span className="text-lg font-bold text-foreground font-mono tabular-nums">
+                {elapsedTime}
+              </span>
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                Time
+              </span>
+            </div>
+            <div className="flex flex-col items-center gap-1 rounded-lg border border-border/60 bg-secondary/30 p-3">
+              <span className="text-sm font-medium text-primary">$</span>
+              <span className="text-lg font-bold text-foreground font-mono tabular-nums">
+                {cost.toFixed(2)}
+              </span>
+              <span className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                Cost
+              </span>
+            </div>
+          </div>
+
+          <Button
+            onClick={stopCharging}
+            disabled={status === "stopping"}
+            variant="destructive"
+            size="lg"
+            className="w-full text-base"
+          >
+            {status === "stopping" ? (
+              <>
+                <Loader2 className="h-5 w-5 animate-spin" />
+                Stopping...
+              </>
+            ) : (
+              <>
+                <CircleStop className="h-5 w-5" />
+                Stop Charging
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}

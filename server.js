@@ -2,6 +2,7 @@ import express from "express";
 import dotenv from "dotenv";
 import QRCode from "qrcode";
 import os from "os";
+import cors from "cors";
 
 import { createCheckoutSession } from "./stripeService.js";
 import { remoteStart, getTransactions, remoteStop } from "./citrineService.js";
@@ -12,8 +13,16 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const FRONTEND_PORT = process.env.FRONTEND_PORT || 3001;
 
 app.use(express.json());
+
+// Allow Next.js frontend to call the Express backend
+app.use(cors({
+  origin: [`http://localhost:${FRONTEND_PORT}`, `http://127.0.0.1:${FRONTEND_PORT}`],
+  methods: ["GET", "POST", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
 
 function getLocalIp() {
   const interfaces = os.networkInterfaces();
@@ -27,38 +36,42 @@ function getLocalIp() {
   return "localhost";
 }
 
-// Serve static files (HTML, CSS, JS) from the 'public' folder
+// Serve static files (HTML, CSS, JS) from the 'public' folder (legacy)
 app.use(express.static("public"));
 
 /**
- * 🔹 Auth API: Request OTP
+ * 🔹 Auth API: Request OTP (Cognito EMAIL_OTP)
  */
 app.post("/api/auth/request-otp", async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: "Email is required" });
 
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ error: "Invalid email address" });
+  }
+
   try {
-    const success = await requestOTP(email);
-    if (success) {
-      res.json({ success: true, message: "OTP sent to your email" });
-    } else {
-      res.status(500).json({ error: "Failed to send OTP email" });
-    }
+    const result = await requestOTP(email);
+    // Return Cognito session — required for the verify step
+    res.json({ success: true, message: "OTP sent to your email", session: result.session });
   } catch (err) {
     console.error("Auth request-otp error:", err.message);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: "Failed to send OTP: " + err.message });
   }
 });
 
 /**
- * 🔹 Auth API: Verify OTP
+ * 🔹 Auth API: Verify OTP (Cognito EMAIL_OTP challenge response)
  */
 app.post("/api/auth/verify-otp", async (req, res) => {
-  const { email, otp } = req.body;
-  if (!email || !otp) return res.status(400).json({ error: "Email and OTP are required" });
+  const { email, otp, session } = req.body;
+  if (!email || !otp || !session) {
+    return res.status(400).json({ error: "Email, OTP, and session are required" });
+  }
 
   try {
-    const result = await verifyOTP(email, otp);
+    const result = await verifyOTP(email, otp, session);
     if (result.success) {
       res.json({ success: true, token: result.token, user: result.user });
     } else {
@@ -140,7 +153,7 @@ app.get("/api/active-session/:transactionId", async (req, res) => {
 /**
  * 🔹 API: Stop charging session
  */
-app.get("/api/stop-charging/:chargerId/:transactionId", async (req, res) => {
+app.get("/api/stop-charging/:chargerId/:transactionId", authenticateToken, async (req, res) => {
   const { chargerId, transactionId } = req.params;
   try {
     await remoteStop(chargerId, transactionId);
@@ -153,16 +166,16 @@ app.get("/api/stop-charging/:chargerId/:transactionId", async (req, res) => {
 
 /**
  * 🔹 API: Generate QR code for a charger
+ * Points to the Next.js frontend app (port 3001)
  */
 app.get("/api/qr/:chargerId", async (req, res) => {
   const { chargerId } = req.params;
   console.log(`[QR-Gen] Request for charger: ${chargerId}`);
 
-  const protocol = req.protocol;
   const ip = getLocalIp();
 
-  // The URL the QR code will point to (using LAN IP instead of localhost)
-  const landingPageUrl = `${protocol}://${ip}:${PORT}/index.html?chargerId=${chargerId}`;
+  // QR points to the Next.js frontend, not the old public/index.html
+  const landingPageUrl = `http://${ip}:${FRONTEND_PORT}/?chargerId=${chargerId}`;
   console.log(`[QR-Gen] Target URL: ${landingPageUrl}`);
 
   try {
@@ -182,14 +195,14 @@ app.get("/api/qr/:chargerId", async (req, res) => {
   }
 });
 
-// Alias for easier access
+// Alias for easier access to QR generator
 app.get("/qr-generator", (req, res) => {
   res.sendFile(process.cwd() + "/public/qr-generator.html");
 });
 
 
 /*
-Create QR checkout
+Create charging session (called by Next.js proxy after OTP verification)
 */
 app.get("/create-session/:chargerId/:userIdTag", authenticateToken, async (req, res) => {
   const { chargerId, userIdTag } = req.params;
@@ -249,14 +262,10 @@ app.post(
 async function startCharging(chargerId, userIdTag) {
   console.log(`[Server] Starting charging sequence for ${chargerId} with user ${userIdTag}`);
 
-  // Create a placeholder record in DB if it doesn't exist (pending)
-  // We don't have a transactionId yet, so we might need a temporary reference or wait for the ID
-  // For now, we wait for the remoteStart to succeed and then get the session started.
-
   try {
     const res = await remoteStart(chargerId, userIdTag);
 
-    if (res[0]?.success || res.status === 'Accepted' || res.status === 'Accepted') { // Citrine status can vary
+    if (res[0]?.success || res.status === 'Accepted') {
       console.log("Charging remote start command accepted!", res);
     } else {
       console.error("Failed to start charging:", res);
@@ -265,15 +274,14 @@ async function startCharging(chargerId, userIdTag) {
 
     let transactionId = null;
     let attempts = 0;
-    const maxAttempts = 12; // Increased attempts
+    const maxAttempts = 12;
 
     while (!transactionId && attempts < maxAttempts) {
       console.log(`Polling for transaction ID (attempt ${attempts + 1}/${maxAttempts})...`);
-      await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
       const transactions = await getTransactions();
 
-      // Find latest active transaction for this charger that isn't already completed in our DB
       const latestTx = transactions
         .filter(tx => tx.stationId === chargerId && tx.isActive === true)
         .sort((a, b) => new Date(b.startTime) - new Date(a.startTime))[0];
@@ -318,5 +326,5 @@ app.use((req, res) => {
  */
 startBillingLoop();
 app.listen(PORT, () =>
-  console.log(`🚀 Server running on http://localhost:${PORT}`)
+  console.log(`🚀 Express server running on http://localhost:${PORT}`)
 );
