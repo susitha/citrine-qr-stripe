@@ -2,6 +2,9 @@ import {
     CognitoIdentityProviderClient,
     InitiateAuthCommand,
     RespondToAuthChallengeCommand,
+    AdminGetUserCommand,
+    AdminCreateUserCommand,
+    AdminSetUserPasswordCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
@@ -57,6 +60,35 @@ function getSigningKey(header, callback) {
  * @returns {{ session: string }} — Cognito session token for step 2
  */
 export async function requestOTP(email) {
+    // Auto-create the user in Cognito if they don't exist yet.
+    // EMAIL_OTP challenges silently skip sending email for non-existent users.
+    try {
+        await cognitoClient.send(new AdminGetUserCommand({
+            UserPoolId: USER_POOL_ID,
+            Username: email,
+        }));
+        console.log(`[Cognito] User ${email} already exists`);
+    } catch (err) {
+        if (err.name === 'UserNotFoundException') {
+            console.log(`[Cognito] Creating new user: ${email}`);
+            await cognitoClient.send(new AdminCreateUserCommand({
+                UserPoolId: USER_POOL_ID,
+                Username: email,
+                UserAttributes: [{ Name: 'email', Value: email }, { Name: 'email_verified', Value: 'true' }],
+                MessageAction: 'SUPPRESS', // Don't send Cognito's default welcome email
+            }));
+            // Set a random permanent password so the user is CONFIRMED (required for USER_AUTH)
+            await cognitoClient.send(new AdminSetUserPasswordCommand({
+                UserPoolId: USER_POOL_ID,
+                Username: email,
+                Password: crypto.randomBytes(16).toString('hex') + 'Aa1!',
+                Permanent: true,
+            }));
+        } else {
+            throw err;
+        }
+    }
+
     // Initiate USER_AUTH — Cognito will offer available challenges
     const initiateRes = await cognitoClient.send(new InitiateAuthCommand({
         AuthFlow: 'USER_AUTH',
