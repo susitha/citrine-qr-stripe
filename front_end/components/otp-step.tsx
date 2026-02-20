@@ -36,7 +36,7 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
 
   async function handleVerify() {
     setError("")
-    if (otp.length !== 6) { setError("Please enter the full 6-digit code"); return }
+    if (otp.length !== 8) { setError("Please enter the full 8-digit code"); return }
     setIsLoading(true)
     try {
       const response = await fetch("/api/otp/verify", {
@@ -106,13 +106,13 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
           </div>
           <CardTitle className="text-xl">Enter Verification Code</CardTitle>
           <CardDescription>
-            {"We've sent a 6-digit code to"}{" "}
+            {"We've sent a 8-digit code to"}{" "}
             <span className="font-medium text-foreground">{maskedEmail}</span>
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col items-center gap-5">
           <InputOTP
-            maxLength={6}
+            maxLength={8}
             value={otp}
             onChange={(value) => { setOtp(value); setError("") }}
             onComplete={handleVerify}
@@ -121,12 +121,14 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
               <InputOTPSlot index={0} />
               <InputOTPSlot index={1} />
               <InputOTPSlot index={2} />
+              <InputOTPSlot index={3} />
             </InputOTPGroup>
             <InputOTPSeparator />
             <InputOTPGroup>
-              <InputOTPSlot index={3} />
               <InputOTPSlot index={4} />
               <InputOTPSlot index={5} />
+              <InputOTPSlot index={6} />
+              <InputOTPSlot index={7} />
             </InputOTPGroup>
           </InputOTP>
 
@@ -134,7 +136,7 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
             <p className="text-sm text-destructive text-center" role="alert">{error}</p>
           )}
 
-          <Button onClick={handleVerify} disabled={isLoading || otp.length !== 6} className="w-full">
+          <Button onClick={handleVerify} disabled={isLoading || otp.length !== 8} className="w-full">
             {isLoading ? <><Loader2 className="h-4 w-4 animate-spin" />Verifying...</> : "Verify & Continue"}
           </Button>
 

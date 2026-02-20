@@ -74,7 +74,11 @@ export async function requestOTP(email) {
             await cognitoClient.send(new AdminCreateUserCommand({
                 UserPoolId: USER_POOL_ID,
                 Username: email,
-                UserAttributes: [{ Name: 'email', Value: email }, { Name: 'email_verified', Value: 'true' }],
+                UserAttributes: [
+                    { Name: 'email', Value: email },
+                    { Name: 'email_verified', Value: 'true' },
+                    { Name: 'phone_number', Value: '+10000000000' } // Satisfy required 'phone_number' attribute
+                ],
                 MessageAction: 'SUPPRESS', // Don't send Cognito's default welcome email
             }));
             // Set a random permanent password so the user is CONFIRMED (required for USER_AUTH)
@@ -143,7 +147,7 @@ export async function verifyOTP(email, otp, session) {
             Session: session,
             ChallengeResponses: {
                 USERNAME: email,
-                EMAIL_OTP: otp,
+                EMAIL_OTP_CODE: otp,
                 ...(getSecretHash(email) && { SECRET_HASH: getSecretHash(email) }),
             },
         }));
