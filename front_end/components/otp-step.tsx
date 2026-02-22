@@ -19,7 +19,7 @@ import { ShieldCheck, ArrowLeft, Loader2, RotateCw } from "lucide-react"
 import { toast } from "sonner"
 
 interface OtpStepProps {
-  email: string
+  identifier: string
   chargerId: string
   /** Cognito challenge session from the send step */
   session: string
@@ -28,11 +28,14 @@ interface OtpStepProps {
   onResend: (newSession: string) => void
 }
 
-export function OtpStep({ email, chargerId, session, onVerified, onBack, onResend }: OtpStepProps) {
+export function OtpStep({ identifier, chargerId, session, onVerified, onBack, onResend }: OtpStepProps) {
   const [otp, setOtp] = useState("")
   const [isLoading, setIsLoading] = useState(false)
   const [isResending, setIsResending] = useState(false)
   const [error, setError] = useState("")
+
+  const OTP_METHOD = process.env.NEXT_PUBLIC_OTP_METHOD || "email"
+  const isSms = OTP_METHOD === "sms"
 
   async function handleVerify() {
     setError("")
@@ -42,7 +45,12 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
       const response = await fetch("/api/otp/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, chargerId, code: otp, session }),
+        body: JSON.stringify({
+          [isSms ? 'phone' : 'email']: identifier,
+          chargerId,
+          code: otp,
+          session
+        }),
       })
       const data = await response.json()
       if (!response.ok) {
@@ -50,7 +58,7 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
         setOtp("")
         return
       }
-      toast.success("Email verified!")
+      toast.success("Verified!")
       onVerified(data.token)
     } catch {
       setError("Network error. Please try again.")
@@ -67,11 +75,14 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
       const response = await fetch("/api/otp/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, chargerId }),
+        body: JSON.stringify({
+          [isSms ? 'phone' : 'email']: identifier,
+          chargerId
+        }),
       })
       const data = await response.json()
       if (response.ok) {
-        toast.success("New code sent to your email!")
+        toast.success(`New code sent to your ${isSms ? 'phone' : 'email'}!`)
         onResend(data.session) // Update session in parent with new Cognito session
       } else {
         toast.error(data.error || "Failed to resend code")
@@ -83,11 +94,10 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
     }
   }
 
-  // Mask email display: su****@gmail.com
-  const maskedEmail = email.replace(
-    /^(.{2})(.+)(@.+)$/,
-    (_, a, b, c) => a + "*".repeat(Math.min(b.length, 4)) + c
-  )
+  // Mask display: su****@gmail.com or +947*****67
+  const maskedIdentifier = isSms
+    ? identifier.replace(/^(\+\d{3})(\d+)(\d{2})$/, (_, a, b, c) => a + "*".repeat(b.length) + c)
+    : identifier.replace(/^(.{2})(.+)(@.+)$/, (_, a, b, c) => a + "*".repeat(Math.min(b.length, 4)) + c)
 
   return (
     <div className="flex flex-col gap-4">
@@ -96,7 +106,7 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
         className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors self-start"
       >
         <ArrowLeft className="h-4 w-4" />
-        Change email
+        Change {isSms ? 'phone' : 'email'}
       </button>
 
       <Card>
@@ -106,8 +116,8 @@ export function OtpStep({ email, chargerId, session, onVerified, onBack, onResen
           </div>
           <CardTitle className="text-xl">Enter Verification Code</CardTitle>
           <CardDescription>
-            {"We've sent a 8-digit code to"}{" "}
-            <span className="font-medium text-foreground">{maskedEmail}</span>
+            {"We've sent an 8-digit code to"}{" "}
+            <span className="font-medium text-foreground">{maskedIdentifier}</span>
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col items-center gap-5">

@@ -7,44 +7,46 @@ import { QrScannerStep } from "@/components/qr-scanner-step"
 import { EmailStep } from "@/components/email-step"
 import { OtpStep } from "@/components/otp-step"
 import { ChargingStep } from "@/components/charging-step"
+import { PhoneStep } from "@/components/phone-step"
 import { Zap } from "lucide-react"
 
-const STEPS = ["Scan", "Email", "Verify", "Charge"]
+const OTP_METHOD = process.env.NEXT_PUBLIC_OTP_METHOD || "email"
+const STEPS = ["Scan", OTP_METHOD === "sms" ? "Phone" : "Email", "Verify", "Charge"]
 
-type AppStep = "scan" | "email" | "otp" | "charging"
+type AppStep = "scan" | "identity" | "otp" | "charging"
 
 function AppContent() {
   const searchParams = useSearchParams()
   const [step, setStep] = useState<AppStep>("scan")
   const [chargerId, setChargerId] = useState("")
-  const [email, setEmail] = useState("")
+  const [identifier, setIdentifier] = useState("")
   /** Cognito challenge session — returned from send OTP, required for verify */
   const [session, setSession] = useState("")
   const [token, setToken] = useState("")
 
-  // If QR URL contains ?chargerId=..., skip to email step
+  // If QR URL contains ?chargerId=..., skip to identity step
   useEffect(() => {
     const qrChargerId = searchParams.get("chargerId")
     if (qrChargerId) {
       setChargerId(qrChargerId)
-      setStep("email")
+      setStep("identity")
     }
   }, [searchParams])
 
   const stepIndex = STEPS.indexOf(
     step === "scan" ? "Scan"
-      : step === "email" ? "Email"
+      : step === "identity" ? (OTP_METHOD === "sms" ? "Phone" : "Email")
         : step === "otp" ? "Verify"
           : "Charge"
   )
 
   const handleChargerFound = useCallback((id: string) => {
     setChargerId(id)
-    setStep("email")
+    setStep("identity")
   }, [])
 
-  const handleOtpSent = useCallback((userEmail: string, cognitoSession: string) => {
-    setEmail(userEmail)
+  const handleOtpSent = useCallback((userId: string, cognitoSession: string) => {
+    setIdentifier(userId)
     setSession(cognitoSession)
     setStep("otp")
   }, [])
@@ -57,7 +59,7 @@ function AppContent() {
   const handleReset = useCallback(() => {
     setStep("scan")
     setChargerId("")
-    setEmail("")
+    setIdentifier("")
     setSession("")
     setToken("")
   }, [])
@@ -87,28 +89,36 @@ function AppContent() {
       <div className="mx-auto max-w-md px-4 py-6">
         {step === "scan" && <QrScannerStep onChargerFound={handleChargerFound} />}
 
-        {step === "email" && (
-          <EmailStep
-            chargerId={chargerId}
-            onOtpSent={handleOtpSent}
-            onBack={() => setStep("scan")}
-          />
+        {step === "identity" && (
+          OTP_METHOD === "sms" ? (
+            <PhoneStep
+              chargerId={chargerId}
+              onOtpSent={handleOtpSent}
+              onBack={() => setStep("scan")}
+            />
+          ) : (
+            <EmailStep
+              chargerId={chargerId}
+              onOtpSent={handleOtpSent}
+              onBack={() => setStep("scan")}
+            />
+          )
         )}
 
         {step === "otp" && (
           <OtpStep
-            email={email}
+            identifier={identifier}
             chargerId={chargerId}
             session={session}
             onVerified={handleVerified}
-            onBack={() => setStep("email")}
+            onBack={() => setStep("identity")}
             onResend={(newSession) => setSession(newSession)}
           />
         )}
 
         {step === "charging" && (
           <ChargingStep
-            phone={email}
+            phone={identifier}
             chargerId={chargerId}
             token={token}
             onReset={handleReset}

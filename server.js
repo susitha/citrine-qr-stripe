@@ -40,21 +40,21 @@ function getLocalIp() {
 app.use(express.static("public"));
 
 /**
- * 🔹 Auth API: Request OTP (Cognito EMAIL_OTP)
+ * 🔹 Auth API: Request OTP (Cognito EMAIL_OTP or SMS_OTP)
  */
 app.post("/api/auth/request-otp", async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: "Email is required" });
+  const method = process.env.OTP_METHOD || 'email';
+  const { email, phone } = req.body;
+  console.log(`[Cognito-Debug] Requesting OTP. Method=${method}, Email=${email}, Phone=${phone}`);
+  const identifier = method === 'sms' ? phone : email;
 
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) {
-    return res.status(400).json({ error: "Invalid email address" });
+  if (!identifier) {
+    return res.status(400).json({ error: `${method === 'sms' ? 'Phone' : 'Email'} is required` });
   }
 
   try {
-    const result = await requestOTP(email);
-    // Return Cognito session — required for the verify step
-    res.json({ success: true, message: "OTP sent to your email", session: result.session });
+    const result = await requestOTP(identifier);
+    res.json({ success: true, message: `OTP sent to your ${method}`, session: result.session });
   } catch (err) {
     console.error("Auth request-otp error:", err.message);
     res.status(500).json({ error: "Failed to send OTP: " + err.message });
@@ -62,16 +62,19 @@ app.post("/api/auth/request-otp", async (req, res) => {
 });
 
 /**
- * 🔹 Auth API: Verify OTP (Cognito EMAIL_OTP challenge response)
+ * 🔹 Auth API: Verify OTP
  */
 app.post("/api/auth/verify-otp", async (req, res) => {
-  const { email, otp, session } = req.body;
-  if (!email || !otp || !session) {
-    return res.status(400).json({ error: "Email, OTP, and session are required" });
+  const method = process.env.OTP_METHOD || 'email';
+  const { email, phone, otp, session } = req.body;
+  const identifier = method === 'sms' ? phone : email;
+
+  if (!identifier || !otp || !session) {
+    return res.status(400).json({ error: "Identifier, OTP, and session are required" });
   }
 
   try {
-    const result = await verifyOTP(email, otp, session);
+    const result = await verifyOTP(identifier, otp, session);
     if (result.success) {
       res.json({ success: true, token: result.token, user: result.user });
     } else {
