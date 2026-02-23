@@ -7,40 +7,77 @@ export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 /*
 Create Checkout (QR payment)
+Saves the card for future off-session charges via setup_future_usage.
 */
-export async function createCheckoutSession(chargerId) {
+export async function createCheckoutSession(chargerId, frontendBase, customerEmail) {
   const currency = process.env.CURRENCY || "usd";
-  return stripe.checkout.sessions.create({
+  const base = frontendBase || process.env.DOMAIN || "http://localhost:3001";
+
+  // Find or create a Stripe Customer so the card is saved to them
+  let customer;
+  if (customerEmail) {
+    const existing = await stripe.customers.list({ email: customerEmail, limit: 1 });
+    if (existing.data.length > 0) {
+      customer = existing.data[0];
+    } else {
+      customer = await stripe.customers.create({ email: customerEmail });
+    }
+  }
+
+  const sessionParams = {
     mode: "payment",
     line_items: [
       {
         price_data: {
-          currency: currency,
-          product_data: {
-            name: `EV Charging - ${chargerId}`,
-          },
+          currency,
+          product_data: { name: `EV Charging - ${chargerId}` },
           unit_amount: 100, // $1.00 holding fee
         },
         quantity: 1,
       },
     ],
-    success_url: `${process.env.DOMAIN}/success`,
-    cancel_url: `${process.env.DOMAIN}/cancel`,
-    metadata: { chargerId }
-  });
+    payment_intent_data: {
+      setup_future_usage: "off_session", // Save the card for later billing
+    },
+    success_url: `${base}/?chargerId=${chargerId}&paid=true`,
+    cancel_url: `${base}/?chargerId=${chargerId}&cancelled=true`,
+    metadata: { chargerId, customerEmail: customerEmail || "" },
+  };
+
+  if (customer) sessionParams.customer = customer.id;
+  else if (customerEmail) sessionParams.customer_email = customerEmail;
+
+  return stripe.checkout.sessions.create(sessionParams);
 }
 
 /*
-Final billing charge
+Final billing charge — off-session using the customer's saved card
 */
-export async function chargeCustomer(amountInCents, metadata = {}) {
+export async function chargeCustomer(amountInCents, customerId, paymentMethodId = null, metadata = {}) {
   const currency = process.env.CURRENCY || "usd";
+
+  // Use the explicit payment method if provided, otherwise list from customer
+  let pmId = paymentMethodId;
+  if (!pmId) {
+    const paymentMethods = await stripe.paymentMethods.list({
+      customer: customerId,
+      type: "card",
+      limit: 1,
+    });
+    if (!paymentMethods.data.length) {
+      throw new Error(`No saved payment method for customer ${customerId}`);
+    }
+    pmId = paymentMethods.data[0].id;
+  }
+
   return stripe.paymentIntents.create({
     amount: amountInCents,
-    currency: currency,
-    payment_method_types: ["card"],
+    currency,
+    customer: customerId,
+    payment_method: pmId,
+    payment_method_types: ["card", "link"],
+    off_session: true,
+    confirm: true,
     metadata,
-    confirm: true, // Auto-confirm for simple demo
-    off_session: true, // Important for background billing
   });
 }

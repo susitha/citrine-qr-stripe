@@ -8,12 +8,13 @@ import { OtpStep } from "@/components/otp-step"
 import { ChargingStep } from "@/components/charging-step"
 import { PhoneStep } from "@/components/phone-step"
 import { Zap } from "lucide-react"
+import { toast } from "sonner"
 
 const OTP_METHOD = process.env.NEXT_PUBLIC_OTP_METHOD || "email"
 const STEPS = [OTP_METHOD === "sms" ? "Phone" : "Email", "Verify", "Charge"]
 const SESSION_KEY = "ev_session"
 
-type AppStep = "identity" | "otp" | "charging"
+type AppStep = "loading" | "identity" | "otp" | "charging"
 
 // --- Session helpers ---
 interface StoredSession {
@@ -57,17 +58,17 @@ function clearSession() {
 
 function AppContent() {
   const searchParams = useSearchParams()
-  const [step, setStep] = useState<AppStep>("identity")
+  const [step, setStep] = useState<AppStep>("loading")
   const [chargerId, setChargerId] = useState("")
   const [identifier, setIdentifier] = useState("")
   const [session, setSession] = useState("")
   const [token, setToken] = useState("")
-  // Increment to force ChargingStep remount (resets its internal status to idle)
   const [sessionKey, setSessionKey] = useState(0)
+  const [paidFromStripe, setPaidFromStripe] = useState(false)
+  const [hasPaidThisSession, setHasPaidThisSession] = useState(false)
+  const [chargingFinished, setChargingFinished] = useState(false)
 
-  // On load: restore chargerId from sessionStorage or URL,
-  // and restore auth session from localStorage.
-  // If both are available → skip straight to charging.
+  // On load: restore chargerId and auth session; handle Stripe redirect params
   useEffect(() => {
     // 1. Resolve chargerId
     const qrChargerId = searchParams.get("chargerId")
@@ -85,18 +86,40 @@ function AppContent() {
     if (saved) {
       setToken(saved.token)
       setIdentifier(saved.identifier)
-      // If we also have a charger ID → jump straight to charging
-      if (resolvedChargerId) {
+    }
+
+    // 3. Handle Stripe redirect params
+    const paid = searchParams.get("paid")
+    const cancelled = searchParams.get("cancelled")
+
+    if (paid === "true" && resolvedChargerId && saved) {
+      // Payment succeeded — auto-start polling (webhook already triggered remote start)
+      setPaidFromStripe(true)
+      setHasPaidThisSession(true)
+      setStep("charging")
+      return
+    }
+
+    if (cancelled === "true") {
+      // Payment cancelled — stay on charging/ready screen, show toast
+      toast.error("Payment cancelled", { description: "Your card was not charged." })
+      if (resolvedChargerId && saved) {
         setStep("charging")
         return
       }
     }
 
-    // No saved session (or no chargerId) → start at identity
+    // Default: if session + chargerId → charging, else identity
+    if (saved && resolvedChargerId) {
+      setStep("charging")
+      return
+    }
+
     setStep("identity")
   }, [searchParams])
 
-  const stepIndex = STEPS.indexOf(
+
+  const stepIndex = chargingFinished ? STEPS.length : STEPS.indexOf(
     step === "identity" ? (OTP_METHOD === "sms" ? "Phone" : "Email")
       : step === "otp" ? "Verify"
         : "Charge"
@@ -120,8 +143,10 @@ function AppContent() {
   // Otherwise → go back to identity step
   const handleReset = useCallback(() => {
     setSession("")
-    setSessionKey(k => k + 1)   // force ChargingStep remount → status resets to idle
-    // intentionally keep token, identifier, chargerId
+    setPaidFromStripe(false) // No longer auto-polling
+    setChargingFinished(false)
+    // NOTE: we keep hasPaidThisSession=true so we skip Stripe UI for the next session
+    setSessionKey(k => k + 1)
   }, [])
 
   // Allow user to sign out (clear saved auth session only — charger ID stays)
@@ -132,6 +157,9 @@ function AppContent() {
     setToken("")
     setStep("identity")
   }, [])
+
+  // Don't render anything until useEffect has determined the correct step
+  if (step === "loading") return null
 
   return (
     <main className="min-h-screen bg-background">
@@ -199,6 +227,9 @@ function AppContent() {
             chargerId={chargerId}
             token={token}
             onReset={handleReset}
+            paidFromStripe={paidFromStripe}
+            hasPaidThisSession={hasPaidThisSession}
+            onFinished={(val) => setChargingFinished(val)}
           />
         )}
       </div>

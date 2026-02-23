@@ -15,7 +15,87 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const FRONTEND_PORT = process.env.FRONTEND_PORT || 3001;
 
+// 🔹 Stripe webhook — MUST be registered BEFORE express.json()
+// Stripe signature verification requires the raw request body.
+app.post(
+  "/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const stripe = (await import("./stripeService.js")).stripe;
+    const sig = req.headers["stripe-signature"];
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("[Webhook] Signature error:", err.message);
+      return res.status(400).send(`Webhook Error: ${err.message}`);
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      const chargerId =
+        session.metadata?.chargerId ||
+        session.display_items?.[0]?.custom?.name ||
+        "CHARGER123";
+      const stripeCustomerId = session.customer || null;
+
+      // Retrieve the payment method used in this checkout and attach to customer
+      let paymentMethodId = null;
+      if (session.payment_intent && stripeCustomerId) {
+        try {
+          const stripe = (await import("./stripeService.js")).stripe;
+          const pi = await stripe.paymentIntents.retrieve(session.payment_intent, {
+            expand: ["payment_method"],
+          });
+          const pm = pi.payment_method;
+          paymentMethodId = typeof pm === "string" ? pm : (pm?.id || null);
+          console.log(`[Webhook] Payment success → charger: ${chargerId}, customer: ${stripeCustomerId}, pm: ${paymentMethodId}`);
+
+          // Explicitly attach PM to customer so listPaymentMethods works too
+          if (paymentMethodId) {
+            try {
+              await stripe.paymentMethods.attach(paymentMethodId, { customer: stripeCustomerId });
+              console.log(`[Webhook] PM ${paymentMethodId} attached to customer ${stripeCustomerId}`);
+            } catch (attachErr) {
+              if (!attachErr.message?.includes("already been attached")) {
+                console.error("[Webhook] PM attach error:", attachErr.message);
+              }
+            }
+          }
+        } catch (e) {
+          console.error("[Webhook] Could not retrieve payment intent:", e.message);
+        }
+      } else {
+        console.log(`[Webhook] Payment success → charger: ${chargerId}, customer: ${stripeCustomerId} (no PI)`);
+      }
+
+      // Store immediately with payment_method_id so billing doesn't need to list cards later
+      await registerSession("pending_" + session.id, chargerId, session.id, null, stripeCustomerId, paymentMethodId);
+
+      const idTag = process.env.OCPP_ID_TAG || "0123456789ABCD";
+      remoteStart(chargerId, idTag)
+        .then(result => {
+          const transactionId = result?.transactionId;
+          if (transactionId) {
+            console.log(`[Webhook] Got transactionId ${transactionId} — linking checkout ${session.id}`);
+            registerSession(transactionId, chargerId, session.id, null, stripeCustomerId, paymentMethodId);
+          } else {
+            console.log("[Webhook] remoteStart returned no transactionId — frontend will poll");
+          }
+        })
+        .catch(err => console.error("[Webhook] remoteStart error:", err.message));
+    }
+
+    res.json({ received: true });
+  }
+);
+
 app.use(express.json());
+
 
 // Allow Next.js frontend to call the Express backend
 app.use(cors({
@@ -168,6 +248,84 @@ app.get("/api/stop-charging/:chargerId/:transactionId", authenticateToken, async
 });
 
 /**
+ * 🔹 API: Direct start for returning customers (skips Stripe Checkout)
+ * Requires: ?email=... query param. Verifies saved card exists, then starts charging.
+ */
+app.get("/api/start-direct/:chargerId", authenticateToken, async (req, res) => {
+  const { chargerId } = req.params;
+  const customerEmail = req.query.email;
+  if (!customerEmail) return res.status(400).json({ error: "email required" });
+
+  try {
+    const { stripe } = await import("./stripeService.js");
+
+    // Find existing Stripe customer
+    const customers = await stripe.customers.list({ email: customerEmail, limit: 1 });
+    if (!customers.data.length) {
+      return res.json({ canDirect: false, reason: "No Stripe customer found" });
+    }
+    const customer = customers.data[0];
+
+    // Check for a saved payment method (card or link)
+    const [cardPms, linkPms] = await Promise.all([
+      stripe.paymentMethods.list({ customer: customer.id, type: "card", limit: 1 }),
+      stripe.paymentMethods.list({ customer: customer.id, type: "link", limit: 1 }),
+    ]);
+    const pm = cardPms.data[0] || linkPms.data[0];
+    if (!pm) {
+      return res.json({ canDirect: false, reason: "No saved payment method" });
+    }
+
+    // Register pending session immediately with customer + PM
+    const pendingId = "pending_direct_" + Date.now();
+    await registerSession(pendingId, chargerId, null, null, customer.id, pm.id);
+
+    // Fire remoteStart async
+    const idTag = process.env.OCPP_ID_TAG || "0123456789ABCD";
+    console.log(`[DirectStart] Starting charger ${chargerId} for customer ${customer.id} (pm: ${pm.id})`);
+    remoteStart(chargerId, idTag)
+      .then(result => {
+        const transactionId = result?.transactionId;
+        if (transactionId) {
+          console.log(`[DirectStart] Got transactionId ${transactionId}`);
+          registerSession(transactionId, chargerId, null, null, customer.id, pm.id);
+        }
+      })
+      .catch(err => console.error("[DirectStart] remoteStart error:", err.message));
+
+    res.json({ canDirect: true });
+  } catch (err) {
+    console.error("Direct start error:", err.message);
+    res.status(500).json({ error: "Failed to start direct charging" });
+  }
+});
+
+/**
+ * 🔹 API: Get final bill for a session (polls until billing is complete)
+ */
+app.get("/api/session-bill/:transactionId", authenticateToken, async (req, res) => {
+  const { transactionId } = req.params;
+  try {
+    const pool = (await import("./db.js")).default;
+    const [rows] = await pool.execute(
+      "SELECT kwh, cost, final_charged, status FROM sessions WHERE transaction_id = ?",
+      [transactionId]
+    );
+    if (!rows.length) return res.status(404).json({ error: "Session not found" });
+    const s = rows[0];
+    res.json({
+      kwh: s.kwh || 0,
+      cost: s.cost || 0,
+      finalCharged: !!s.final_charged,
+      status: s.status,
+    });
+  } catch (err) {
+    console.error("Session bill error:", err.message);
+    res.status(500).json({ error: "Failed to get session bill" });
+  }
+});
+
+/**
  * 🔹 API: Generate QR code for a charger
  * Points to the Next.js frontend app (port 3001)
  */
@@ -203,6 +361,25 @@ app.get("/qr-generator", (req, res) => {
   res.sendFile(process.cwd() + "/public/qr-generator.html");
 });
 
+/**
+ * 🔹 API: Create Stripe Checkout session for a charger
+ * Called by the Next.js frontend before starting a charge
+ */
+app.get("/api/checkout/:chargerId", authenticateToken, async (req, res) => {
+  const { chargerId } = req.params;
+  const customerEmail = req.query.email || null;
+  const ip = getLocalIp();
+  const frontendBase = `http://${ip}:${FRONTEND_PORT}`;
+
+  try {
+    const session = await createCheckoutSession(chargerId, frontendBase, customerEmail);
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error("[Checkout] Error:", err.message);
+    res.status(500).json({ error: "Failed to create payment session" });
+  }
+});
+
 
 /*
 Create charging session (called by Next.js proxy after OTP verification)
@@ -215,52 +392,6 @@ app.get("/create-session/:chargerId/:userIdTag", authenticateToken, async (req, 
 });
 
 
-/*
-Stripe webhook
-*/
-app.post(
-  "/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const stripe = (await import("./stripeService.js")).stripe;
-
-    const sig = req.headers["stripe-signature"];
-
-    let event;
-
-    try {
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
-    } catch (err) {
-      return res.status(400).send(err.message);
-    }
-
-    /*
-    When payment succeeds → start charger
-    */
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object;
-
-      const chargerId =
-        session.display_items?.[0]?.custom?.name ||
-        session.metadata?.chargerId ||
-        "CHARGER123";
-
-      console.log("Payment success → starting charger");
-
-      const result = await remoteStart(chargerId);
-
-      const transactionId = result.transactionId;
-
-      registerSession(transactionId, chargerId, session.id);
-    }
-
-    res.json({ received: true });
-  }
-);
 
 async function startCharging(chargerId, userIdTag) {
   console.log(`[Server] Starting charging sequence for ${chargerId} with user ${userIdTag}`);

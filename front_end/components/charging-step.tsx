@@ -20,6 +20,7 @@ import {
   Loader2,
   CheckCircle2,
   RotateCcw,
+  CreditCard,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -28,9 +29,12 @@ interface ChargingStepProps {
   chargerId: string
   token: string
   onReset: () => void
+  paidFromStripe: boolean      // true only when just returned from redirect
+  hasPaidThisSession: boolean  // true after first payment in this login
+  onFinished: (val: boolean) => void
 }
 
-type SessionStatus = "idle" | "starting" | "charging" | "stopping" | "completed" | "stopped"
+type SessionStatus = "idle" | "starting" | "charging" | "stopping" | "billing" | "completed" | "stopped"
 
 interface LiveSession {
   transactionId: string | null
@@ -41,9 +45,11 @@ interface LiveSession {
   totalCost: number
 }
 
-export function ChargingStep({ phone, chargerId, token, onReset }: ChargingStepProps) {
+export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe, hasPaidThisSession, onFinished }: ChargingStepProps) {
   const [status, setStatus] = useState<SessionStatus>("idle")
+  const [isRedirecting, setIsRedirecting] = useState(false)
   const [session, setSession] = useState<LiveSession | null>(null)
+  const [finalBill, setFinalBill] = useState<{ kwh: number; cost: number } | null>(null)
   const [elapsedTime, setElapsedTime] = useState("00:00")
   const [batteryLevel, setBatteryLevel] = useState(25)
   const startTimeRef = useRef<number | null>(null)
@@ -95,6 +101,65 @@ export function ChargingStep({ phone, chargerId, token, onReset }: ChargingStepP
 
   // Cleanup on unmount
   useEffect(() => () => stopPolling(), [stopPolling])
+
+  /** After Stripe payment, webhook already called remoteStart.
+   *  Just poll for the transaction ID and move to charging state. */
+  const pollForTransaction = useCallback(async () => {
+    setStatus("starting")
+    let transactionId: string | null = null
+    let attempts = 0
+    const maxAttempts = 20
+
+    while (!transactionId && attempts < maxAttempts) {
+      await new Promise((r) => setTimeout(r, 3000))
+      try {
+        const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
+        const statusData = await statusRes.json()
+        if (statusData.chargerStatus?.transactionId) {
+          transactionId = statusData.chargerStatus.transactionId
+        }
+      } catch { /* continue */ }
+      attempts++
+    }
+
+    if (!transactionId) {
+      toast.error("Could not confirm charging session. Please check charger status.")
+      setStatus("idle")
+      return
+    }
+
+    startTimeRef.current = Date.now()
+    setBatteryLevel(25 + Math.random() * 10)
+    setSession({
+      transactionId,
+      stationId: chargerId,
+      isActive: true,
+      startTime: new Date().toISOString(),
+      totalKwh: 0,
+      totalCost: 0,
+    })
+    setStatus("charging")
+    toast.success("Charging started!", { description: `Connected to ${chargerId}` })
+
+    pollIntervalRef.current = setInterval(() => pollSession(transactionId!), 5000)
+  }, [chargerId, pollSession])
+
+  // Monitor status to notify parent
+  useEffect(() => {
+    if (status === "completed" || status === "stopped") {
+      onFinished(true)
+    } else {
+      onFinished(false)
+    }
+  }, [status, onFinished])
+
+  // Auto-start polling if we just returned from Stripe payment redirect
+  useEffect(() => {
+    if (paidFromStripe) {
+      pollForTransaction()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   async function startCharging() {
     setStatus("starting")
@@ -174,15 +239,9 @@ export function ChargingStep({ phone, chargerId, token, onReset }: ChargingStepP
       const response = await fetch("/api/charging", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chargerId,
-          transactionId: session.transactionId,
-          token,
-        }),
+        body: JSON.stringify({ chargerId, transactionId: session.transactionId, token }),
       })
-
       const data = await response.json()
-
       if (!response.ok) {
         toast.error(data.error || "Failed to stop charging")
         setStatus("charging")
@@ -190,10 +249,38 @@ export function ChargingStep({ phone, chargerId, token, onReset }: ChargingStepP
       }
 
       stopPolling()
-      setStatus("completed")
-      toast.success("Charging stopped!", {
-        description: `Total: ${session.totalKwh.toFixed(2)} kWh`,
-      })
+      const txId = session.transactionId
+
+      // Transition to billing state — poll until final_charged=TRUE
+      setStatus("billing")
+      toast.success("Charging stopped! Processing payment...")
+
+      const maxAttempts = 36 // 3 minutes
+      let attempts = 0
+      const billPoll = setInterval(async () => {
+        attempts++
+        try {
+          const res = await fetch(`/api/session-bill?transactionId=${txId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          })
+          if (res.ok) {
+            const bill = await res.json()
+            if (bill.finalCharged) {
+              clearInterval(billPoll)
+              setFinalBill({ kwh: bill.kwh, cost: bill.cost })
+              setStatus("completed")
+              toast.success("Payment charged!", {
+                description: `$${bill.cost.toFixed(2)} for ${bill.kwh.toFixed(2)} kWh`,
+              })
+              return
+            }
+          }
+        } catch { /* continue polling */ }
+        if (attempts >= maxAttempts) {
+          clearInterval(billPoll)
+          setStatus("completed") // show complete even if billing timed out
+        }
+      }, 5000)
     } catch {
       toast.error("Failed to stop charging")
       setStatus("charging")
@@ -201,6 +288,49 @@ export function ChargingStep({ phone, chargerId, token, onReset }: ChargingStepP
   }
 
   const pricePerKwh = 0.30
+
+  /** Redirect to Stripe Checkout or start directly if card is saved */
+  async function handlePayAndCharge(forceStripe = false) {
+    setIsRedirecting(true)
+    try {
+      // 1. Try to start directly ONLY if they've already confirmed their card in this login
+      // and they haven't explicitly clicked "Use Different Card"
+      if (hasPaidThisSession && !forceStripe) {
+        const directUrl = `/api/start-direct?chargerId=${encodeURIComponent(chargerId)}&email=${encodeURIComponent(phone)}`
+        const directRes = await fetch(directUrl, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        const directData = await directRes.json()
+
+        if (directRes.ok && directData.canDirect) {
+          toast.success("Using saved card. Starting charging...")
+          setStatus("starting")
+          setIsRedirecting(false)
+          pollForTransaction() // Start polling for the new transaction immediately
+          return
+        }
+      }
+
+      // 2. Fallback to Stripe Checkout session if no saved card
+      const checkoutUrl = `/api/checkout?chargerId=${encodeURIComponent(chargerId)}&email=${encodeURIComponent(phone)}`
+      const checkoutRes = await fetch(checkoutUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const checkoutData = await checkoutRes.json()
+
+      if (!checkoutRes.ok || !checkoutData.url) {
+        toast.error(checkoutData.error || "Could not start payment")
+        setIsRedirecting(false)
+        return
+      }
+
+      window.location.href = checkoutData.url
+    } catch (err: any) {
+      console.error("Payment start error:", err)
+      toast.error("Network error. Please try again.")
+      setIsRedirecting(false)
+    }
+  }
 
   // Pre-charging: show start button
   if (status === "idle") {
@@ -235,10 +365,46 @@ export function ChargingStep({ phone, chargerId, token, onReset }: ChargingStepP
             </div>
           </div>
 
-          <Button onClick={startCharging} size="lg" className="w-full text-base">
-            <Zap className="h-5 w-5" />
-            Start Charging
+          <Button
+            onClick={() => handlePayAndCharge(false)}
+            disabled={isRedirecting}
+            size="lg"
+            className="w-full text-base font-semibold"
+          >
+            {isRedirecting ? (
+              <><Loader2 className="h-5 w-5 animate-spin" />Connecting...</>
+            ) : (
+              <><BatteryCharging className="h-5 w-5" />Start Charging</>
+            )}
           </Button>
+
+          {!isRedirecting && (
+            <button
+              onClick={() => handlePayAndCharge(true)}
+              className="mt-2 text-xs text-muted-foreground hover:text-primary transition-colors underline underline-offset-4"
+            >
+              Use Different Card
+            </button>
+          )}
+        </CardContent>
+      </Card>
+    )
+  }
+
+  // Processing off-session payment
+  if (status === "billing") {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center gap-4 py-12">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+            <Loader2 className="h-8 w-8 text-primary animate-spin" />
+          </div>
+          <div className="text-center">
+            <p className="text-lg font-semibold text-foreground">Processing Payment</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Calculating your energy usage and charging your card...
+            </p>
+          </div>
         </CardContent>
       </Card>
     )
@@ -265,8 +431,8 @@ export function ChargingStep({ phone, chargerId, token, onReset }: ChargingStepP
 
   // Session completed/stopped
   if (status === "completed" || status === "stopped") {
-    const kwh = session?.totalKwh || 0
-    const cost = session?.totalCost || kwh * pricePerKwh
+    const kwh = finalBill?.kwh ?? session?.totalKwh ?? 0
+    const cost = finalBill?.cost ?? (kwh * pricePerKwh)
 
     return (
       <div className="flex flex-col gap-4">

@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     charger_id VARCHAR(255) NOT NULL,
     checkout_id VARCHAR(255),
     user_id_tag VARCHAR(255),
+    stripe_customer_id VARCHAR(255),          -- Stripe Customer ID for off-session billing
+    payment_method_id VARCHAR(255),           -- Specific payment method saved at checkout
     status ENUM('pending', 'active', 'completed') DEFAULT 'pending',
+    final_charged BOOLEAN DEFAULT FALSE,      -- TRUE once kWh billing has been charged
     kwh FLOAT DEFAULT 0,
     cost FLOAT DEFAULT 0,
     start_time TIMESTAMP NULL,
