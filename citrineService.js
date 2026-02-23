@@ -59,7 +59,7 @@ export async function getTransactions() {
   try {
     const query = `
       query {
-        Transactions {
+        Transactions(limit: 50, order_by: {startTime: desc}) {
           id
           transactionId
           stationId

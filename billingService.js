@@ -45,7 +45,6 @@ async function bill(tx) {
 
     if (session.final_charged) {
       console.log(`[Billing] Session ${txId} already charged. Cleaning up status.`);
-      // Mark completed so it stops appearing in the billing loop
       await pool.execute(
         "UPDATE sessions SET status = 'completed' WHERE transaction_id = ?",
         [txId]
@@ -53,14 +52,12 @@ async function bill(tx) {
       return;
     }
 
-    const kWh = Number(process.env.BILLING_TEST_KWH) || Number(tx.totalKwh) || 0;  // TEST: set BILLING_TEST_KWH=1 in .env to simulate billing
+    const kWh = Number(process.env.BILLING_TEST_KWH) || Number(tx.totalKwh) || 0;
     const amount = Math.round(kWh * PRICE_PER_KWH * 100);
 
     console.log(`[Billing] Transaction ${txId} | Charger ${session.charger_id}`);
     console.log(`[Billing] Energy: ${kWh.toFixed(2)} kWh | Rate: $${PRICE_PER_KWH}/kWh | Total: $${(amount / 100).toFixed(2)}`);
 
-    // Resolve stripe_customer_id and payment_method_id
-    // May be on the session directly OR on the pending_ row
     let stripeCustomerId = session.stripe_customer_id;
     let paymentMethodId = session.payment_method_id;
     if ((!stripeCustomerId || !paymentMethodId) && session.checkout_id) {
@@ -89,10 +86,6 @@ async function bill(tx) {
       } catch (err) {
         console.error(`[Billing] Failed to charge customer:`, err.message);
       }
-    } else if (session.checkout_id) {
-      console.log(`[Billing] No stripe_customer_id found — manual billing record only.`);
-    } else {
-      console.log(`[Billing] Manual session (no Stripe). Bill recorded only.`);
     }
 
     await pool.execute(
@@ -107,89 +100,88 @@ async function bill(tx) {
 }
 
 /*
-Check finished transactions
+Check finished transactions & handle auto-linking
 */
 async function checkFinishedTransactions() {
   try {
     const txs = await getTransactions();
 
-    const [activeRows] = await pool.execute(
-      "SELECT transaction_id, charger_id, checkout_id, stripe_customer_id, payment_method_id, final_charged FROM sessions WHERE status != 'completed' AND final_charged = FALSE"
+    // 1. Fetch ALL existing transaction/pending sessions
+    const [allRows] = await pool.execute(
+      "SELECT transaction_id, status, charger_id, checkout_id, stripe_customer_id, payment_method_id, final_charged FROM sessions"
+    );
+    const existingIds = new Set(allRows.map(r => String(r.transaction_id)));
+
+    // 2. Identify brand-new transactions for auto-linking
+    const tenMinsAgo = new Date(Date.now() - 10 * 60000);
+    const candidateTxs = txs.filter(tx => {
+      const txId = String(tx.transactionId);
+      if (existingIds.has(txId)) return false;
+      return !tx.endTime || new Date(tx.endTime) > tenMinsAgo;
+    });
+
+    // 3. Find our own pending sessions that need a real ID
+    const pendingRows = allRows.filter(r =>
+      String(r.transaction_id).startsWith("pending_") && r.status !== 'completed'
     );
 
-    // Separate real sessions from pending_ placeholders
-    const realActive = activeRows.filter(r => !String(r.transaction_id).startsWith("pending_"));
-    const pendingRows = activeRows.filter(r => String(r.transaction_id).startsWith("pending_"));
+    // 4. Track all sessions currently in the "active/billable" state
+    const realActive = allRows.filter(r =>
+      !String(r.transaction_id).startsWith("pending_") && r.status !== 'completed' && !r.final_charged
+    );
 
-    // Auto-link: match most recent CitrineOS tx per charger to a pending_ row
-    // Group txs by stationId, take highest transactionId (most recent)
-    const latestTxByCharger = new Map();
-    for (const tx of txs) {
-      const existing = latestTxByCharger.get(tx.stationId);
-      if (!existing || Number(tx.transactionId) > Number(existing.transactionId)) {
-        latestTxByCharger.set(tx.stationId, tx);
-      }
-    }
-
-    const linkedPendingIds = new Set(); // prevent one pending_ linking to multiple txs
-
-    for (const tx of txs) {
+    // 5. Auto-link new transactions to pending rows
+    const linkedPendingIds = new Set();
+    for (const tx of candidateTxs) {
       const txId = String(tx.transactionId);
-      const alreadyRegistered = realActive.some(r => String(r.transaction_id) === txId);
-      if (alreadyRegistered) continue;
+      const chargerId = String(tx.stationId);
 
       const pending = pendingRows.find(p =>
-        p.charger_id === tx.stationId && !linkedPendingIds.has(p.transaction_id)
+        String(p.charger_id).toLowerCase() === chargerId.toLowerCase() &&
+        !linkedPendingIds.has(p.transaction_id)
       );
       if (!pending) continue;
 
-      // Only link the MOST RECENT transaction for this charger to the pending_ row
-      const latestTx = latestTxByCharger.get(tx.stationId);
-      if (String(tx.transactionId) !== String(latestTx?.transactionId)) continue;
-
-      console.log(`[Billing] Linking tx ${txId} → checkout ${pending.checkout_id} (customer: ${pending.stripe_customer_id}, pm: ${pending.payment_method_id || 'none'})`);
+      console.log(`[Billing] Linking tx ${txId} → pending ${pending.transaction_id}`);
       await registerSession(txId, tx.stationId, pending.checkout_id, null, pending.stripe_customer_id, pending.payment_method_id);
-      realActive.push({ transaction_id: txId, charger_id: tx.stationId, checkout_id: pending.checkout_id, stripe_customer_id: pending.stripe_customer_id, payment_method_id: pending.payment_method_id, final_charged: false });
+
+      realActive.push({
+        transaction_id: txId,
+        charger_id: tx.stationId,
+        checkout_id: pending.checkout_id,
+        stripe_customer_id: pending.stripe_customer_id,
+        payment_method_id: pending.payment_method_id,
+        final_charged: false
+      });
       linkedPendingIds.add(pending.transaction_id);
 
-      // Mark the pending_ row as completed so it never re-matches
       await pool.execute(
         "UPDATE sessions SET status = 'completed', final_charged = TRUE WHERE transaction_id = ?",
         [pending.transaction_id]
       );
     }
 
-    if (realActive.length === 0) return;
+    // 6. Process billing for all active/real transactions
+    if (realActive.length > 0) {
+      for (const tx of txs) {
+        const txId = String(tx.transactionId);
+        const session = realActive.find(r => String(r.transaction_id) === txId);
+        if (!session) continue;
 
-    console.log(`[Billing] Active sessions: ${realActive.map(r => r.transaction_id).join(", ")}`);
+        if (!tx.endTime) {
+          // Still active — skip billing
+          continue;
+        }
 
-    const activeMap = new Map(realActive.map(row => [String(row.transaction_id), row]));
-
-    for (const tx of txs) {
-      const txId = String(tx.transactionId);
-      if (!activeMap.has(txId)) continue;
-
-      const dbRow = activeMap.get(txId);
-
-      if (dbRow.final_charged) continue;
-
-      if (!tx.endTime) {
-        console.log(`[Billing] ${txId} still active — skipping`);
-        continue;
+        console.log(`[Billing] ${txId} completed — billing now`);
+        await bill(tx);
       }
-
-      console.log(`[Billing] ${txId} completed — billing now`);
-      await bill(tx);
     }
   } catch (err) {
     console.error("Billing loop error:", err.message);
   }
 }
 
-
-/*
-Start polling loop
-*/
 export function startBillingLoop() {
   setInterval(checkFinishedTransactions, 15000);
 }

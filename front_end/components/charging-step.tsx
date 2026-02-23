@@ -108,17 +108,25 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
     setStatus("starting")
     let transactionId: string | null = null
     let attempts = 0
-    const maxAttempts = 20
+    const maxAttempts = 30 // 30 * 3s = 90 seconds (give slow chargers more time)
+
+    console.log(`[Charging] Starting transaction confirmation loop for ${chargerId}...`)
 
     while (!transactionId && attempts < maxAttempts) {
       await new Promise((r) => setTimeout(r, 3000))
       try {
         const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
         const statusData = await statusRes.json()
-        if (statusData.chargerStatus?.transactionId) {
-          transactionId = statusData.chargerStatus.transactionId
+
+        console.log(`[Charging] Poll attempt ${attempts + 1}/${maxAttempts} for ${chargerId}:`, statusData.chargerStatus)
+
+        if (statusData.chargerStatus?.transactionId !== null && statusData.chargerStatus?.transactionId !== undefined) {
+          transactionId = String(statusData.chargerStatus.transactionId)
+          console.log(`[Charging] CONFIRMED: transactionId=${transactionId}`)
         }
-      } catch { /* continue */ }
+      } catch (err) {
+        console.error(`[Charging] Poll error on attempt ${attempts + 1}:`, err)
+      }
       attempts++
     }
 
