@@ -18,11 +18,11 @@ export async function POST(request: Request) {
       )
     }
 
-    // Use phone as the OCPP idTag (user identifier)
-    const encodedPhone = encodeURIComponent(phone)
+    // Use a fixed OCPP idTag configured on the backend, not the user's email/phone
+    const idTag = process.env.OCPP_ID_TAG || "0123456789ABCD"
 
     const response = await fetch(
-      `${BACKEND_URL}/create-session/${chargerId}/${encodedPhone}`,
+      `${BACKEND_URL}/create-session/${chargerId}/${encodeURIComponent(idTag)}`,
       {
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },

@@ -16,7 +16,7 @@ import { toast } from "sonner"
 interface EmailStepProps {
   chargerId: string
   onOtpSent: (email: string, session: string) => void
-  onBack: () => void
+  onBack?: () => void
 }
 
 export function EmailStep({ chargerId, onOtpSent, onBack }: EmailStepProps) {
@@ -67,13 +67,15 @@ export function EmailStep({ chargerId, onOtpSent, onBack }: EmailStepProps) {
 
   return (
     <div className="flex flex-col gap-4">
-      <button
-        onClick={onBack}
-        className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors self-start"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        Back to scanner
-      </button>
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors self-start"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Back
+        </button>
+      )}
 
       <Card>
         <CardHeader className="text-center">

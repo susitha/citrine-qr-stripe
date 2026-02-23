@@ -4,10 +4,10 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3000"
 
 export async function POST(request: Request) {
   try {
-    const { email, phone, chargerId } = await request.json()
+    const { email, phone } = await request.json()
 
-    if ((!email && !phone) || !chargerId) {
-      return NextResponse.json({ error: "Identifier and charger ID are required" }, { status: 400 })
+    if (!email && !phone) {
+      return NextResponse.json({ error: "Email or phone is required" }, { status: 400 })
     }
 
     const response = await fetch(`${BACKEND_URL}/api/auth/request-otp`, {

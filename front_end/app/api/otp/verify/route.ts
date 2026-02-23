@@ -4,11 +4,11 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3000"
 
 export async function POST(request: Request) {
   try {
-    const { email, phone, chargerId, code, session } = await request.json()
+    const { email, phone, code, session } = await request.json()
 
-    if ((!email && !phone) || !chargerId || !code || !session) {
+    if ((!email && !phone) || !code || !session) {
       return NextResponse.json(
-        { error: "Identifier, charger ID, OTP code, and session are required" },
+        { error: "Identifier, OTP code, and session are required" },
         { status: 400 }
       )
     }
