@@ -12,9 +12,9 @@ const _spaceMono = Space_Mono({
 })
 
 export const metadata: Metadata = {
-  title: 'VoltCharge - EV Charging Made Simple',
+  title: 'ELECTRON AMERICA - EV Charging Made Simple',
   description:
-    'Scan a QR code, verify your identity, and start charging your electric vehicle in seconds.',
+    'Scan a QR code, verify your identity, and start charging your electric vehicle in seconds with ELECTRON AMERICA.',
   icons: {
     icon: [
       {

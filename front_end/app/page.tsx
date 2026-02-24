@@ -256,7 +256,7 @@ export default function Home() {
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex items-center gap-2 text-muted-foreground">
           <Zap className="h-5 w-5 animate-pulse text-primary" />
-          <span>Loading VoltCharge...</span>
+          <span>Loading ELECTRON AMERICA...</span>
         </div>
       </div>
     }>
