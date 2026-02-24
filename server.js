@@ -206,60 +206,59 @@ app.get("/api/charger-status/:chargerId", async (req, res) => {
       [chargerId]
     );
 
+    let activeTx = null;
+    let fallbackToCitrine = true;
+
     if (localRows.length > 0) {
-      const txId = localRows[0].transaction_id;
       const status = localRows[0].status;
-
-      // If it's still a pending session (pre-checkout or waiting for remoteStart)
-      // don't return an ID yet. Keep the frontend polling until Citrine links a REAL ID.
-      const displayId = String(txId).startsWith("pending") ? null : txId;
-
-      console.log(`[Status] Found ${status} session in local DB: ${txId} (display: ${displayId}) for charger ${chargerId}`);
-      return res.json({
-        chargerId,
-        status: "Occupied",
-        transactionId: displayId,
-      });
-    }
-
-    // 2. Fallback to Citrine GraphQL (slower/backup)
-    console.log(`[Status] ${new Date().toISOString()} | No real ID in local DB for ${chargerId}, checking Citrine...`);
-    const transactions = await getTransactions();
-
-    // Find active transaction for this charger
-    const cid = chargerId.toLowerCase().trim();
-    const fiveMinsAgo = new Date(Date.now() - 5 * 60000);
-
-    const activeTx = transactions.find(tx => {
-      const sid = String(tx.stationId || "").toLowerCase().trim();
-
-      // A session is active if:
-      // 1. Citrine says isActive=true
-      // 2. OR it has NO endTime and has a startTime
-      // 3. OR it started in the last 5 minutes and hasn't ended (loosened check)
-      const hasEnded = !!tx.endTime;
-      const startedRecently = tx.startTime && new Date(tx.startTime) > fiveMinsAgo;
-      const isActive = (tx.isActive === true || tx.isActive === "true" || (!hasEnded && (tx.startTime || startedRecently)));
-
-      // Exact match or fuzzy match (e.g. "CHARGER_1" vs "1")
-      const matches = sid === cid || sid.includes(cid) || cid.includes(sid);
-      return matches && isActive;
-    });
-
-    if (!activeTx && transactions.length > 0) {
-      const myTxs = transactions.filter(t => String(t.stationId || "").toLowerCase().trim().includes(cid));
-      if (myTxs.length > 0) {
-        const latest = myTxs[0];
-        console.log(`[Status] Found ${myTxs.length} past sessions for ${chargerId}. Latest: ID=${latest.transactionId}, Active=${latest.isActive}, EndTime=${latest.endTime}`);
+      if (status === 'active') {
+        const txId = localRows[0].transaction_id;
+        if (!String(txId).startsWith("pending")) {
+          // If it's already a real active session in DB, we don't NEED to check Citrine
+          activeTx = { transactionId: txId, stationId: chargerId, isActive: true };
+          fallbackToCitrine = false;
+          console.log(`[Status] Found active session in local DB: ${txId} for charger ${chargerId}`);
+        }
       }
-      const allSids = [...new Set(transactions.map(t => t.stationId))].slice(0, 5);
-      console.log(`[Status] No CURRENT match for ${chargerId} in Citrine. Top stationIds found: ${allSids.join(", ")}`);
     }
+
+    if (fallbackToCitrine) {
+      // 2. Fallback to Citrine GraphQL (slower/backup)
+      console.log(`[Status] ${new Date().toISOString()} | Checking Citrine for ${chargerId}...`);
+      const transactions = await getTransactions();
+
+      // Find active transaction for this charger
+      const cid = chargerId.toLowerCase().trim();
+      const fiveMinsAgo = new Date(Date.now() - 5 * 60000);
+
+      activeTx = transactions.find(tx => {
+        const sid = String(tx.stationId || "").toLowerCase().trim();
+        const hasEnded = !!tx.endTime;
+        const startedRecently = tx.startTime && new Date(tx.startTime) > fiveMinsAgo;
+        const isActive = (tx.isActive === true || tx.isActive === "true" || (!hasEnded && (tx.startTime || startedRecently)));
+
+        const matches = sid === cid || sid.includes(cid) || cid.includes(sid);
+        return matches && isActive;
+      });
+
+      if (!activeTx && transactions.length > 0) {
+        const myTxs = transactions.filter(t => String(t.stationId || "").toLowerCase().trim().includes(cid));
+        if (myTxs.length > 0) {
+          const latest = myTxs[0];
+          console.log(`[Status] Found ${myTxs.length} past sessions for ${chargerId}. Latest: ID=${latest.transactionId}, Active=${latest.isActive}, EndTime=${latest.endTime}`);
+        }
+      }
+    }
+
+    // 4. Calculate if we are waiting for a physical plug-in
+    // If we have a local pending session but Citrine hasn't seen a transaction yet
+    const isWaitingForPlug = !!localRows[0] && !activeTx;
 
     res.json({
       chargerId,
-      status: activeTx ? "Occupied" : "Available",
+      status: activeTx ? "Occupied" : (localRows.length > 0 ? "Occupied" : "Available"),
       transactionId: activeTx?.transactionId !== undefined ? activeTx.transactionId : null,
+      isWaitingForPlug
     });
   } catch (err) {
     console.error("Charger status check error:", err.message);
@@ -541,6 +540,10 @@ async function startCharging(chargerId, userIdTag) {
   console.log(`[Server] Starting charging sequence for ${chargerId} with user ${userIdTag}`);
 
   try {
+    // Register as pending_start immediately so isWaitingForPlug triggers right away
+    const pendingId = "pending_start_" + Date.now();
+    await registerSession(pendingId, chargerId, null, userIdTag);
+
     const res = await remoteStart(chargerId, userIdTag);
 
     if (res[0]?.success || res.status === 'Accepted') {

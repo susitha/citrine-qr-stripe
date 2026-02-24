@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useCallback, useEffect, Suspense } from "react"
+import Image from "next/image"
 import { useSearchParams } from "next/navigation"
 import { StepIndicator } from "@/components/step-indicator"
 import { EmailStep } from "@/components/email-step"
@@ -166,10 +167,15 @@ function AppContent() {
       <header className="sticky top-0 z-50 border-b border-border/60 bg-background/90 backdrop-blur-xl">
         <div className="mx-auto flex h-14 max-w-md items-center justify-between px-4">
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-              <Zap className="h-4 w-4 text-primary-foreground" />
+            <div className="relative h-9 w-9 overflow-hidden rounded-full border border-border/40 shadow-sm">
+              <Image
+                src="/logo.png"
+                alt="Logo"
+                fill
+                className="object-cover"
+              />
             </div>
-            <span className="text-lg font-bold text-foreground tracking-tight">VoltCharge</span>
+            <span className="text-sm font-bold text-foreground tracking-tight">ELECTRON AMERICA</span>
           </div>
           <div className="flex items-center gap-2">
             {chargerId && (
@@ -237,7 +243,7 @@ function AppContent() {
 
       <footer className="mx-auto max-w-md px-4 pb-8">
         <p className="text-center text-xs text-muted-foreground">
-          VoltCharge &mdash; EV Charging Made Simple
+          ELECTRON AMERICA &mdash; EV Charging Made Simple
         </p>
       </footer>
     </main>

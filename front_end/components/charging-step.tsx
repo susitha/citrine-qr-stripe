@@ -21,8 +21,36 @@ import {
   CheckCircle2,
   RotateCcw,
   CreditCard,
+  Play,
+  Square,
+  AlertCircle,
+  Phone,
+  Smartphone,
+  MapPin,
+  Gauge,
 } from "lucide-react"
 import { toast } from "sonner"
+
+function PlugAnimation() {
+  return (
+    <div className="flex flex-col items-center gap-4 py-4 w-full max-w-[280px]">
+      <div className="relative h-32 w-full bg-gradient-to-b from-primary/10 to-transparent rounded-3xl border-2 border-dashed border-primary/30 flex items-center justify-center overflow-hidden">
+        {/* Animated Plug Icon */}
+        <div className="flex flex-col items-center gap-2 animate-bounce">
+          <div className="bg-primary p-4 rounded-2xl shadow-[0_0_20px_rgba(var(--primary),0.3)]">
+            <Zap className="h-10 w-10 text-primary-foreground fill-current" />
+          </div>
+          <div className="h-4 w-1.5 bg-primary/40 rounded-full" />
+        </div>
+
+        {/* Connection Port indicator */}
+        <div className="absolute bottom-4 h-1 w-20 bg-primary/20 rounded-full overflow-hidden">
+          <div className="h-full w-full bg-primary animate-pulse" />
+        </div>
+      </div>
+    </div>
+  )
+}
 
 interface ChargingStepProps {
   phone: string
@@ -55,6 +83,7 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
   }
 
   const [isRedirecting, setIsRedirecting] = useState(false)
+  const [isWaitingForPlug, setIsWaitingForPlug] = useState(false)
   const [session, setSession] = useState<LiveSession | null>(null)
   const [finalBill, setFinalBill] = useState<{ kwh: number; cost: number } | null>(null)
   const [elapsedTime, setElapsedTime] = useState("00:00")
@@ -195,6 +224,10 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
 
         console.log(`[Charging] Poll attempt ${attempts + 1}/${maxAttempts} for ${chargerId}:`, statusData.chargerStatus)
 
+        if (statusData.chargerStatus?.isWaitingForPlug) {
+          setIsWaitingForPlug(true)
+        }
+
         if (statusData.chargerStatus?.transactionId !== null && statusData.chargerStatus?.transactionId !== undefined) {
           transactionId = String(statusData.chargerStatus.transactionId)
           console.log(`[Charging] CONFIRMED: transactionId=${transactionId}`)
@@ -222,6 +255,7 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
       totalCost: 0,
     })
     setStatus("charging")
+    setIsWaitingForPlug(false)
     toast.success("Charging started!", { description: `Connected to ${chargerId}` })
 
     if (isMounted.current) {
@@ -279,6 +313,10 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
         const statusData = await statusRes.json()
 
+        if (statusData.chargerStatus?.isWaitingForPlug) {
+          setIsWaitingForPlug(true)
+        }
+
         if (statusData.chargerStatus?.transactionId) {
           transactionId = statusData.chargerStatus.transactionId
         }
@@ -302,6 +340,7 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         totalCost: 0,
       })
       setStatus("charging")
+      setIsWaitingForPlug(false)
 
       toast.success("Charging started!", {
         description: `Connected to ${chargerId}`,
@@ -483,14 +522,31 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
     return (
       <Card>
         <CardContent className="flex flex-col items-center gap-4 py-12">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
-            <Loader2 className="h-8 w-8 text-primary animate-spin" />
+          <div className="flex flex-col items-center gap-6">
+            {isWaitingForPlug ? (
+              <PlugAnimation />
+            ) : (
+              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+                <Loader2 className="h-8 w-8 text-primary animate-spin" />
+              </div>
+            )}
           </div>
           <div className="text-center">
-            <p className="text-lg font-semibold text-foreground">Connecting to Charger</p>
-            <p className="text-sm text-muted-foreground mt-1">
-              Sending remote start command to {chargerId}...
-            </p>
+            {isWaitingForPlug ? (
+              <>
+                <p className="text-lg font-bold text-foreground">Please Plug In</p>
+                <p className="text-sm text-primary font-medium mt-1">
+                  Plug the charger to your vehicle to start
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-lg font-semibold text-foreground">Connecting to Charger</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Sending remote start command to {chargerId}...
+                </p>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
