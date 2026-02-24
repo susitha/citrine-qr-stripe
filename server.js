@@ -43,7 +43,7 @@ app.post(
         session.display_items?.[0]?.custom?.name ||
         "CHARGER123";
       const stripeCustomerId = session.customer || null;
-      console.log(`[Webhook-Debug] session.completed for charger ${chargerId}, customer ${stripeCustomerId}`);
+      console.log(`[Webhook-Debug] session.completed for charger ${chargerId}, customer ${stripeCustomerId} (session: ${session.id})`);
 
       // Retrieve the payment method used in this checkout and attach to customer
       let paymentMethodId = null;
@@ -110,7 +110,11 @@ app.use(express.json());
 // 🔹 Global Request Logger (Debug)
 app.use((req, res, next) => {
   if (req.path !== "/favicon.ico") {
-    console.log(`[Request] ${new Date().toISOString()} | ${req.method} ${req.originalUrl}`);
+    const timestamp = new Date().toISOString();
+    console.log(`[Request] ${timestamp} | ${req.method} ${req.originalUrl}`);
+    if (req.method === "POST" && req.path === "/webhook") {
+      console.log(`[Webhook-Trace] Raw webhook hit detected at ${timestamp}`);
+    }
   }
   next();
 });
@@ -196,20 +200,25 @@ app.get("/api/charger-status/:chargerId", async (req, res) => {
        WHERE LOWER(charger_id) = LOWER(?) 
        AND (
          status = 'active' OR 
-         (status = 'pending' AND created_at > NOW() - INTERVAL 10 MINUTE)
+         (status = 'pending' AND created_at > UTC_TIMESTAMP() - INTERVAL 10 MINUTE)
        )
-       ORDER BY created_at DESC LIMIT 1`,
+       ORDER BY (status = 'active') DESC, created_at DESC LIMIT 1`,
       [chargerId]
     );
 
     if (localRows.length > 0) {
       const txId = localRows[0].transaction_id;
       const status = localRows[0].status;
-      console.log(`[Status] Found ${status} session in local DB: ${txId} for charger ${chargerId}`);
+
+      // If it's still a pending session (pre-checkout or waiting for remoteStart)
+      // don't return an ID yet. Keep the frontend polling until Citrine links a REAL ID.
+      const displayId = String(txId).startsWith("pending") ? null : txId;
+
+      console.log(`[Status] Found ${status} session in local DB: ${txId} (display: ${displayId}) for charger ${chargerId}`);
       return res.json({
         chargerId,
         status: "Occupied",
-        transactionId: txId.startsWith("pending_") ? null : txId,
+        transactionId: displayId,
       });
     }
 
@@ -396,6 +405,7 @@ app.get("/api/start-direct/:chargerId", authenticateToken, async (req, res) => {
 
     // Register pending session immediately with customer + PM
     const pendingId = "pending_direct_" + Date.now();
+    console.log(`[DirectStart-Debug] Registering manual start for ${chargerId} (pendingId: ${pendingId})`);
     await registerSession(pendingId, chargerId, null, null, customer.id, pm.id);
 
     // Fire remoteStart async
@@ -502,6 +512,11 @@ app.get("/api/checkout/:chargerId", authenticateToken, async (req, res) => {
 
   try {
     const session = await createCheckoutSession(chargerId, frontendBase, customerEmail);
+
+    // Register a pre-session so the charger looks Occupied while the user handles Stripe
+    console.log(`[Checkout-Debug] Pre-registering session for ${chargerId} (session: ${session.id})`);
+    await registerSession("pending_pre_" + session.id, chargerId, session.id);
+
     res.json({ url: session.url });
   } catch (err) {
     console.error("[Checkout] Error:", err.message);

@@ -32,6 +32,7 @@ interface ChargingStepProps {
   paidFromStripe: boolean      // true only when just returned from redirect
   hasPaidThisSession: boolean  // true after first payment in this login
   onFinished: (val: boolean) => void
+  onUnauthorized?: () => void
 }
 
 type SessionStatus = "idle" | "starting" | "charging" | "stopping" | "billing" | "completed" | "stopped"
@@ -45,8 +46,14 @@ interface LiveSession {
   totalCost: number
 }
 
-export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe, hasPaidThisSession, onFinished }: ChargingStepProps) {
-  const [status, setStatus] = useState<SessionStatus>("idle")
+export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe, hasPaidThisSession, onFinished, onUnauthorized }: ChargingStepProps) {
+  const [status, _setStatus] = useState<SessionStatus>("idle")
+  const statusRef = useRef<SessionStatus>("idle")
+  const setStatus = (s: SessionStatus) => {
+    _setStatus(s)
+    statusRef.current = s
+  }
+
   const [isRedirecting, setIsRedirecting] = useState(false)
   const [session, setSession] = useState<LiveSession | null>(null)
   const [finalBill, setFinalBill] = useState<{ kwh: number; cost: number } | null>(null)
@@ -54,6 +61,28 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
   const [batteryLevel, setBatteryLevel] = useState(25)
   const startTimeRef = useRef<number | null>(null)
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const isMounted = useRef(true)
+
+  const handleAuthError = useCallback(() => {
+    toast.error("Session expired", { description: "Please sign in again to continue." })
+
+    if (onUnauthorized) {
+      onUnauthorized()
+    } else {
+      onReset()
+    }
+  }, [onUnauthorized, onReset])
+
+  const checkResponse = useCallback(async (res: Response) => {
+    if (res.status === 401 || res.status === 403) {
+      const data = await res.clone().json().catch(() => ({}))
+      if (data.error?.includes("expired") || res.status === 403) {
+        handleAuthError()
+        return false
+      }
+    }
+    return true
+  }, [handleAuthError])
 
   const stopPolling = useCallback(() => {
     if (pollIntervalRef.current) {
@@ -62,7 +91,46 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
     }
   }, [])
 
+  const startBillingPoll = useCallback((txId: string) => {
+    stopPolling()
+    setStatus("billing")
+
+    console.log(`[Billing] Starting billing poll for ${txId}...`)
+    const maxAttempts = 60 // 5 minutes
+    let attempts = 0
+    pollIntervalRef.current = setInterval(async () => {
+      attempts++
+      try {
+        const res = await fetch(`/api/session-bill?transactionId=${txId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        if (!(await checkResponse(res))) {
+          stopPolling()
+          return
+        }
+        if (res.ok) {
+          const bill = await res.json()
+          if (bill.finalCharged) {
+            console.log(`[Billing] SUCCESS: Session ${txId} charged. Total: $${bill.cost}`)
+            stopPolling()
+            setFinalBill({ kwh: bill.kwh, cost: bill.cost })
+            setStatus("completed")
+            toast.success("Payment charged!", {
+              description: `$${bill.cost.toFixed(2)} for ${bill.kwh.toFixed(2)} kWh`,
+            })
+            return
+          }
+        }
+      } catch { /* continue polling */ }
+      if (attempts >= maxAttempts) {
+        stopPolling()
+        setStatus("completed")
+      }
+    }, 5000)
+  }, [token, checkResponse, stopPolling])
+
   const pollSession = useCallback(async (transactionId: string) => {
+    if (statusRef.current !== "charging") return
     try {
       const response = await fetch(`/api/charging?transactionId=${transactionId}`)
       const data = await response.json()
@@ -71,15 +139,15 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         const s = data.session as LiveSession
         setSession(s)
 
-        if (!s.isActive) {
-          setStatus("completed")
-          stopPolling()
+        if (!s.isActive && statusRef.current === "charging") {
+          console.log(`[Charging] Session ${transactionId} stopped. Transitioning to billing.`)
+          startBillingPoll(transactionId)
         }
       }
     } catch {
       // Silent polling failure
     }
-  }, [stopPolling])
+  }, [startBillingPoll])
 
   // Update elapsed timer every second
   useEffect(() => {
@@ -100,7 +168,13 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
   }, [status])
 
   // Cleanup on unmount
-  useEffect(() => () => stopPolling(), [stopPolling])
+  useEffect(() => {
+    isMounted.current = true
+    return () => {
+      isMounted.current = false
+      stopPolling()
+    }
+  }, [stopPolling])
 
   /** After Stripe payment, webhook already called remoteStart.
    *  Just poll for the transaction ID and move to charging state. */
@@ -112,8 +186,9 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
 
     console.log(`[Charging] Starting transaction confirmation loop for ${chargerId}...`)
 
-    while (!transactionId && attempts < maxAttempts) {
+    while (!transactionId && attempts < maxAttempts && isMounted.current) {
       await new Promise((r) => setTimeout(r, 3000))
+      if (!isMounted.current) return
       try {
         const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
         const statusData = await statusRes.json()
@@ -149,7 +224,9 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
     setStatus("charging")
     toast.success("Charging started!", { description: `Connected to ${chargerId}` })
 
-    pollIntervalRef.current = setInterval(() => pollSession(transactionId!), 5000)
+    if (isMounted.current) {
+      pollIntervalRef.current = setInterval(() => pollSession(transactionId!), 5000)
+    }
   }, [chargerId, pollSession])
 
   // Monitor status to notify parent
@@ -196,8 +273,9 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
       let attempts = 0
       const maxAttempts = 20
 
-      while (!transactionId && attempts < maxAttempts) {
+      while (!transactionId && attempts < maxAttempts && isMounted.current) {
         await new Promise((r) => setTimeout(r, 3000))
+        if (!isMounted.current) return
         const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
         const statusData = await statusRes.json()
 
@@ -230,9 +308,11 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
       })
 
       // Start polling for real-time kWh/cost
-      pollIntervalRef.current = setInterval(() => {
-        pollSession(transactionId!)
-      }, 5000)
+      if (isMounted.current) {
+        pollIntervalRef.current = setInterval(() => {
+          pollSession(transactionId!)
+        }, 5000)
+      }
     } catch {
       toast.error("Failed to start charging session")
       setStatus("idle")
@@ -249,6 +329,7 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ chargerId, transactionId: session.transactionId, token }),
       })
+      if (!(await checkResponse(response))) return
       const data = await response.json()
       if (!response.ok) {
         toast.error(data.error || "Failed to stop charging")
@@ -260,35 +341,8 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
       const txId = session.transactionId
 
       // Transition to billing state — poll until final_charged=TRUE
-      setStatus("billing")
       toast.success("Charging stopped! Processing payment...")
-
-      const maxAttempts = 36 // 3 minutes
-      let attempts = 0
-      const billPoll = setInterval(async () => {
-        attempts++
-        try {
-          const res = await fetch(`/api/session-bill?transactionId=${txId}`, {
-            headers: { Authorization: `Bearer ${token}` },
-          })
-          if (res.ok) {
-            const bill = await res.json()
-            if (bill.finalCharged) {
-              clearInterval(billPoll)
-              setFinalBill({ kwh: bill.kwh, cost: bill.cost })
-              setStatus("completed")
-              toast.success("Payment charged!", {
-                description: `$${bill.cost.toFixed(2)} for ${bill.kwh.toFixed(2)} kWh`,
-              })
-              return
-            }
-          }
-        } catch { /* continue polling */ }
-        if (attempts >= maxAttempts) {
-          clearInterval(billPoll)
-          setStatus("completed") // show complete even if billing timed out
-        }
-      }, 5000)
+      startBillingPoll(txId)
     } catch {
       toast.error("Failed to stop charging")
       setStatus("charging")
@@ -299,6 +353,8 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
 
   /** Redirect to Stripe Checkout or start directly if card is saved */
   async function handlePayAndCharge(forceStripe = false) {
+    console.log(`[Charging-Debug] handlePayAndCharge called. hasPaid=${hasPaidThisSession}, forceStripe=${forceStripe}`);
+    toast.info("Preparing charging session...");
     setIsRedirecting(true)
     try {
       // 1. Try to start directly ONLY if they've already confirmed their card in this login
@@ -308,6 +364,8 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         const directRes = await fetch(directUrl, {
           headers: { Authorization: `Bearer ${token}` },
         })
+        if (!(await checkResponse(directRes))) return
+
         const directData = await directRes.json()
 
         if (directRes.ok && directData.canDirect) {
@@ -324,6 +382,8 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
       const checkoutRes = await fetch(checkoutUrl, {
         headers: { Authorization: `Bearer ${token}` },
       })
+      if (!(await checkResponse(checkoutRes))) return
+
       const checkoutData = await checkoutRes.json()
 
       if (!checkoutRes.ok || !checkoutData.url) {

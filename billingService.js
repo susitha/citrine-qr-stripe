@@ -12,7 +12,8 @@ Register new session (DB Persistence)
 */
 export async function registerSession(transactionId, chargerId, checkoutId, userIdTag = null, stripeCustomerId = null, paymentMethodId = null) {
   try {
-    const status = transactionId.startsWith("pending_") ? "pending" : "active";
+    // If it's a real transaction ID (not starting with pending_), it must be active
+    const status = transactionId && !String(transactionId).startsWith("pending_") ? "active" : "pending";
 
     await pool.execute(
       `INSERT INTO sessions 
@@ -25,7 +26,7 @@ export async function registerSession(transactionId, chargerId, checkoutId, user
          payment_method_id = COALESCE(VALUES(payment_method_id), payment_method_id)`,
       [transactionId, chargerId, checkoutId, userIdTag, stripeCustomerId, paymentMethodId, status]
     );
-    console.log(`[DB-Debug] Session registered: ID=${transactionId}, Charger=${chargerId}, Status=${checkoutId ? 'active' : 'pending'}`);
+    console.log(`[DB-Debug] Session registered: ID=${transactionId}, Charger=${chargerId}, Status=${status}`);
   } catch (err) {
     console.error("Failed to register session in DB:", err.message);
   }
@@ -169,7 +170,8 @@ async function checkFinishedTransactions() {
         const session = realActive.find(r => String(r.transaction_id) === txId);
         if (!session) continue;
 
-        if (!tx.endTime) {
+        const isActive = tx.isActive === true || tx.isActive === "true";
+        if (isActive && !tx.endTime) {
           // Still active — skip billing
           continue;
         }

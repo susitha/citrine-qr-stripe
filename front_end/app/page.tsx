@@ -227,6 +227,7 @@ function AppContent() {
             chargerId={chargerId}
             token={token}
             onReset={handleReset}
+            onUnauthorized={handleSignOut}
             paidFromStripe={paidFromStripe}
             hasPaidThisSession={hasPaidThisSession}
             onFinished={(val) => setChargingFinished(val)}
