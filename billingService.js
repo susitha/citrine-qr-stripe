@@ -24,7 +24,7 @@ export async function registerSession(transactionId, chargerId, checkoutId, user
       [transactionId, chargerId, checkoutId, userIdTag, stripeCustomerId, paymentMethodId,
         checkoutId ? 'active' : 'pending']
     );
-    console.log("Tracking session in DB:", transactionId);
+    console.log(`[DB-Debug] Session registered: ID=${transactionId}, Charger=${chargerId}, Status=${checkoutId ? 'active' : 'pending'}`);
   } catch (err) {
     console.error("Failed to register session in DB:", err.message);
   }

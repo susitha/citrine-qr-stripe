@@ -107,7 +107,14 @@ app.post(
 app.use(express.json());
 
 
-// Allow Next.js frontend to call the Express backend
+// 🔹 Global Request Logger (Debug)
+app.use((req, res, next) => {
+  if (req.path !== "/favicon.ico") {
+    console.log(`[Request] ${new Date().toISOString()} | ${req.method} ${req.originalUrl}`);
+  }
+  next();
+});
+
 app.use(cors({
   origin: [`http://localhost:${FRONTEND_PORT}`, `http://127.0.0.1:${FRONTEND_PORT}`],
   methods: ["GET", "POST", "PATCH", "OPTIONS"],
@@ -207,7 +214,7 @@ app.get("/api/charger-status/:chargerId", async (req, res) => {
     }
 
     // 2. Fallback to Citrine GraphQL (slower/backup)
-    console.log(`[Status] No real ID in local DB for ${chargerId}, checking Citrine...`);
+    console.log(`[Status] ${new Date().toISOString()} | No real ID in local DB for ${chargerId}, checking Citrine...`);
     const transactions = await getTransactions();
 
     // Find active transaction for this charger

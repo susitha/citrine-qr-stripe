@@ -207,13 +207,19 @@ export async function verifyOTP(identifier, otp, session) {
  */
 export function authenticateToken(req, res, next) {
     const token = req.headers['authorization']?.split(' ')[1];
-    if (!token) return res.status(401).json({ error: 'Authentication required' });
+    if (!token) {
+        console.warn(`[Auth-Debug] No token provided for ${req.path}`);
+        return res.status(401).json({ error: 'Authentication required' });
+    }
 
     jwt.verify(token, getSigningKey, {
         algorithms: ['RS256'],
         issuer: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
     }, (err, decoded) => {
-        if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+        if (err) {
+            console.error(`[Auth-Debug] Token verification failed for ${req.path}:`, err.message);
+            return res.status(403).json({ error: 'Invalid or expired token' });
+        }
         req.user = { id: decoded.sub, email: decoded.email };
         next();
     });
