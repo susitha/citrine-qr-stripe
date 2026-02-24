@@ -19,6 +19,7 @@ export async function GET(request: Request) {
         }
 
         const url = `${BACKEND_URL}/api/checkout/${encodeURIComponent(chargerId)}?email=${encodeURIComponent(email)}`
+        console.log(`[Proxy-Debug] GET ${url}`);
 
         const response = await fetch(url, {
             method: "GET",

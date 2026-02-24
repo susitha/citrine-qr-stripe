@@ -20,9 +20,11 @@ export async function POST(request: Request) {
 
     // Use a fixed OCPP idTag configured on the backend, not the user's email/phone
     const idTag = process.env.OCPP_ID_TAG || "0123456789ABCD"
+    const url = `${BACKEND_URL}/create-session/${chargerId}/${encodeURIComponent(idTag)}`;
+    console.log(`[Proxy-Debug] GET ${url}`);
 
     const response = await fetch(
-      `${BACKEND_URL}/create-session/${chargerId}/${encodeURIComponent(idTag)}`,
+      url,
       {
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
@@ -86,9 +88,10 @@ export async function GET(request: Request) {
     }
 
     // Otherwise, get charger status (find transactionId)
-    const response = await fetch(
-      `${BACKEND_URL}/api/charger-status/${chargerId}`
-    )
+    const url = `${BACKEND_URL}/api/charger-status/${chargerId}`;
+    console.log(`[Proxy-Debug] GET ${url}`);
+
+    const response = await fetch(url)
     const data = await response.json()
 
     if (!response.ok) {

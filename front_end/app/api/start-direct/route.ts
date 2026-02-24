@@ -16,8 +16,11 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: "chargerId and email are required" }, { status: 400 })
     }
 
+    const url = `${BACKEND_URL}/api/start-direct/${encodeURIComponent(chargerId)}?email=${encodeURIComponent(email)}`;
+    console.log(`[Proxy-Debug] GET ${url}`);
+
     const res = await fetch(
-        `${BACKEND_URL}/api/start-direct/${encodeURIComponent(chargerId)}?email=${encodeURIComponent(email)}`,
+        url,
         { headers: { Authorization: token || "" } }
     )
     const data = await res.json()

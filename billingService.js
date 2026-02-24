@@ -12,6 +12,8 @@ Register new session (DB Persistence)
 */
 export async function registerSession(transactionId, chargerId, checkoutId, userIdTag = null, stripeCustomerId = null, paymentMethodId = null) {
   try {
+    const status = transactionId.startsWith("pending_") ? "pending" : "active";
+
     await pool.execute(
       `INSERT INTO sessions 
         (transaction_id, charger_id, checkout_id, user_id_tag, stripe_customer_id, payment_method_id, status)
@@ -21,8 +23,7 @@ export async function registerSession(transactionId, chargerId, checkoutId, user
          checkout_id = VALUES(checkout_id),
          stripe_customer_id = COALESCE(VALUES(stripe_customer_id), stripe_customer_id),
          payment_method_id = COALESCE(VALUES(payment_method_id), payment_method_id)`,
-      [transactionId, chargerId, checkoutId, userIdTag, stripeCustomerId, paymentMethodId,
-        checkoutId ? 'active' : 'pending']
+      [transactionId, chargerId, checkoutId, userIdTag, stripeCustomerId, paymentMethodId, status]
     );
     console.log(`[DB-Debug] Session registered: ID=${transactionId}, Charger=${chargerId}, Status=${checkoutId ? 'active' : 'pending'}`);
   } catch (err) {
