@@ -8,6 +8,7 @@ import { createCheckoutSession } from "./stripeService.js";
 import { remoteStart, getTransactions, remoteStop } from "./citrineService.js";
 import { registerSession, startBillingLoop } from "./billingService.js";
 import { requestOTP, verifyOTP, authenticateToken } from "./authService.js";
+import pool from "./db.js";
 
 dotenv.config();
 
@@ -79,15 +80,23 @@ app.post(
       const idTag = process.env.OCPP_ID_TAG || "0123456789ABCD";
       remoteStart(chargerId, idTag)
         .then(result => {
+          console.log(`[Webhook] remoteStart response for ${chargerId}:`, JSON.stringify(result));
           const transactionId = result?.transactionId;
           if (transactionId) {
             console.log(`[Webhook] Got transactionId ${transactionId} — linking checkout ${session.id}`);
             registerSession(transactionId, chargerId, session.id, null, stripeCustomerId, paymentMethodId);
           } else {
-            console.log("[Webhook] remoteStart returned no transactionId — frontend will poll");
+            console.log("[Webhook] remoteStart returned no transactionId — starting background poll");
+            pollForTransactionId(chargerId, session.id, stripeCustomerId, paymentMethodId);
           }
         })
-        .catch(err => console.error("[Webhook] remoteStart error:", err.message));
+        .catch(err => {
+          if (err.message.startsWith("OCPP_ERROR:")) {
+            console.error(`[Webhook] remoteStart failed for ${chargerId} with OCPP error: ${err.message}. Skipping poll.`);
+          } else {
+            console.error("[Webhook] remoteStart error:", err.message);
+          }
+        });
     }
 
     res.json({ received: true });
@@ -172,18 +181,117 @@ app.post("/api/auth/verify-otp", async (req, res) => {
 app.get("/api/charger-status/:chargerId", async (req, res) => {
   const { chargerId } = req.params;
   try {
+    // 1. Check our own sessions table first (it's immediate after remoteStart)
+    // Look for recent active OR pending sessions (created in the last 2 mins)
+    const [localRows] = await pool.execute(
+      `SELECT transaction_id, status FROM sessions 
+       WHERE charger_id = ? 
+       AND (
+         status = 'active' OR 
+         (status = 'pending' AND created_at > NOW() - INTERVAL 2 MINUTE)
+       )
+       ORDER BY created_at DESC LIMIT 1`,
+      [chargerId]
+    );
+
+    if (localRows.length > 0) {
+      const txId = localRows[0].transaction_id;
+      const status = localRows[0].status;
+      console.log(`[Status] Found ${status} session in local DB: ${txId} for charger ${chargerId}`);
+      return res.json({
+        chargerId,
+        status: "Occupied",
+        transactionId: txId.startsWith("pending_") ? null : txId,
+      });
+    }
+
+    // 2. Fallback to Citrine GraphQL (slower/backup)
+    console.log(`[Status] No real ID in local DB for ${chargerId}, checking Citrine...`);
     const transactions = await getTransactions();
-    const activeTx = transactions.find(tx => tx.stationId === chargerId && tx.isActive === true);
+
+    // Find active transaction for this charger
+    const cid = chargerId.toLowerCase().trim();
+    const fiveMinsAgo = new Date(Date.now() - 5 * 60000);
+
+    const activeTx = transactions.find(tx => {
+      const sid = String(tx.stationId || "").toLowerCase().trim();
+
+      // A session is active if:
+      // 1. Citrine says isActive=true
+      // 2. OR it has NO endTime and has a startTime
+      // 3. OR it started in the last 5 minutes and hasn't ended (loosened check)
+      const hasEnded = !!tx.endTime;
+      const startedRecently = tx.startTime && new Date(tx.startTime) > fiveMinsAgo;
+      const isActive = (tx.isActive === true || tx.isActive === "true" || (!hasEnded && (tx.startTime || startedRecently)));
+
+      // Exact match or fuzzy match (e.g. "CHARGER_1" vs "1")
+      const matches = sid === cid || sid.includes(cid) || cid.includes(sid);
+      return matches && isActive;
+    });
+
+    if (!activeTx && transactions.length > 0) {
+      const myTxs = transactions.filter(t => String(t.stationId || "").toLowerCase().trim().includes(cid));
+      if (myTxs.length > 0) {
+        const latest = myTxs[0];
+        console.log(`[Status] Found ${myTxs.length} past sessions for ${chargerId}. Latest: ID=${latest.transactionId}, Active=${latest.isActive}, EndTime=${latest.endTime}`);
+      }
+      const allSids = [...new Set(transactions.map(t => t.stationId))].slice(0, 5);
+      console.log(`[Status] No CURRENT match for ${chargerId} in Citrine. Top stationIds found: ${allSids.join(", ")}`);
+    }
 
     res.json({
       chargerId,
       status: activeTx ? "Occupied" : "Available",
-      transactionId: activeTx?.transactionId || null,
+      transactionId: activeTx?.transactionId !== undefined ? activeTx.transactionId : null,
     });
   } catch (err) {
+    console.error("Charger status check error:", err.message);
     res.status(500).json({ error: "Failed to fetch charger status" });
   }
 });
+
+/**
+ * Helper to poll for a transaction ID in the background if remoteStart didn't return it
+ */
+async function pollForTransactionId(chargerId, checkoutId, customerId, paymentMethodId) {
+  let transactionId = null;
+  let attempts = 0;
+  const maxAttempts = 30; // 30 * 4s = 120 seconds (background poll is now longer)
+  console.log(`[Poll] Starting background poll for charger ${chargerId} (up to 120s)...`);
+
+  while (!transactionId && attempts < maxAttempts) {
+    await new Promise(r => setTimeout(r, 4000));
+    try {
+      const transactions = await getTransactions();
+      const cid = chargerId.toLowerCase().trim();
+      const fiveMinsAgo = new Date(Date.now() - 5 * 60000);
+
+      const tx = transactions.find(t => {
+        const sid = String(t.stationId || "").toLowerCase().trim();
+        const hasEnded = !!t.endTime;
+        const startedRecently = t.startTime && new Date(t.startTime) > fiveMinsAgo;
+        const isActive = (t.isActive === true || t.isActive === "true" || (!hasEnded && (t.startTime || startedRecently)));
+
+        const matches = sid === cid || sid.includes(cid) || cid.includes(sid);
+        return matches && isActive;
+      });
+
+      if (tx?.transactionId) {
+        transactionId = tx.transactionId;
+        console.log(`[Poll] SUCCESS: Found transactionId ${transactionId} for ${chargerId} on attempt ${attempts + 1}`);
+        await registerSession(transactionId, chargerId, checkoutId, null, customerId, paymentMethodId);
+      } else {
+        console.log(`[Poll] Attempt ${attempts + 1}/${maxAttempts}: No active tx in ${transactions.length} records for ${chargerId}`);
+      }
+    } catch (e) {
+      console.error(`[Poll] Error on attempt ${attempts + 1}:`, e.message);
+    }
+    attempts++;
+  }
+  if (!transactionId) {
+    console.error(`[Poll] FAILED: Could not find transactionId for ${chargerId} after 120s.`);
+  }
+}
 
 /**
  * 🔹 API: Get active session details
@@ -285,13 +393,23 @@ app.get("/api/start-direct/:chargerId", authenticateToken, async (req, res) => {
     console.log(`[DirectStart] Starting charger ${chargerId} for customer ${customer.id} (pm: ${pm.id})`);
     remoteStart(chargerId, idTag)
       .then(result => {
+        console.log(`[DirectStart] remoteStart response for ${chargerId}:`, JSON.stringify(result));
         const transactionId = result?.transactionId;
         if (transactionId) {
           console.log(`[DirectStart] Got transactionId ${transactionId}`);
           registerSession(transactionId, chargerId, null, null, customer.id, pm.id);
+        } else {
+          console.log(`[DirectStart] No immediate transactionId — starting background poll`);
+          pollForTransactionId(chargerId, null, customer.id, pm.id);
         }
       })
-      .catch(err => console.error("[DirectStart] remoteStart error:", err.message));
+      .catch(err => {
+        if (err.message.startsWith("OCPP_ERROR:")) {
+          console.error(`[DirectStart] remoteStart failed for ${chargerId} with OCPP error: ${err.message}. Skipping poll.`);
+        } else {
+          console.error("[DirectStart] remoteStart error:", err.message);
+        }
+      });
 
     res.json({ canDirect: true });
   } catch (err) {

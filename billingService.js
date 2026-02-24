@@ -191,5 +191,5 @@ async function checkFinishedTransactions() {
 Start polling loop
 */
 export function startBillingLoop() {
-  setInterval(checkFinishedTransactions, 15000);
+  setInterval(checkFinishedTransactions, 5000);
 }
