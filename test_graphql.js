@@ -8,15 +8,10 @@ const API_KEY = process.env.CITRINE_API_KEY;
 async function testQuery() {
   const query = `
     query {
-      Transactions(limit: 5, order_by: {startTime: desc}) {
-        id
+      MeterValues(limit: 50, order_by: {timestamp: desc}) {
+        sampledValue
+        timestamp
         transactionId
-        stationId
-        isActive
-        MeterValues(limit: 5, order_by: {timestamp: desc}) {
-          sampledValue
-          timestamp
-        }
       }
     }
   `;
@@ -32,7 +27,22 @@ async function testQuery() {
     });
 
     const data = await res.json();
-    console.log(JSON.stringify(data, null, 2));
+    const meterValues = data.data?.MeterValues || [];
+    
+    meterValues.forEach(mv => {
+      const soc = mv.sampledValue.find(sv => sv.measurand === "SoC");
+      if (soc) {
+        console.log(`Found SoC: ${soc.value}% for Transaction: ${mv.transactionId} at ${mv.timestamp}`);
+      }
+    });
+
+    if (!meterValues.some(mv => mv.sampledValue.some(sv => sv.measurand === "SoC"))) {
+      console.log("No SoC found in recent 50 meter values.");
+      // Print first sample to see what measurands we have
+      if (meterValues.length > 0) {
+        console.log("Available measurands in latest sample:", meterValues[0].sampledValue.map(sv => sv.measurand).join(", "));
+      }
+    }
   } catch (err) {
     console.error("Error:", err.message);
   }

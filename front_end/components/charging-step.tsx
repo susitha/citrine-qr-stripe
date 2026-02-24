@@ -31,6 +31,52 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 
+function BatteryChargingIndicator({ level }: { level: number }) {
+  return (
+    <div className="flex flex-col items-center gap-6 py-8">
+      <div className="relative w-32 h-52">
+        {/* Battery Container */}
+        <div className="absolute inset-0 bg-secondary/10 rounded-[2rem] border-4 border-muted-foreground/15 backdrop-blur-sm overflow-hidden p-1.5 shadow-inner">
+          {/* Progress Fill */}
+          <div
+            className="absolute bottom-1.5 left-1.5 right-1.5 rounded-[1.4rem] bg-gradient-to-t from-primary/90 via-primary to-primary transition-all duration-1000 ease-out shadow-[0_0_20px_rgba(var(--primary),0.2)]"
+            style={{ height: `calc(${level}% - 12px)` }}
+          >
+            {/* Liquid Surface Effect */}
+            <div className="absolute -top-3 left-0 right-0 h-6">
+              <div className="absolute inset-0 bg-white/20 blur-lg animate-pulse" />
+              <div className="absolute top-0 left-0 right-0 h-1 bg-white/20 rounded-full" />
+            </div>
+
+            {/* Center Zap Icon */}
+            <div className="absolute inset-0 flex items-center justify-center">
+              <Zap className="h-10 w-10 text-primary-foreground fill-current animate-[pulse_2s_infinite]" />
+            </div>
+          </div>
+
+          {/* Glass Reflection */}
+          <div className="absolute top-1/4 left-3 w-1 h-1/3 bg-white/5 rounded-full blur-[0.5px]" />
+        </div>
+
+        {/* Battery Head/Tip */}
+        <div className="absolute -top-3 left-1/2 -translate-x-1/2 w-10 h-3 bg-muted-foreground/20 rounded-t-lg border-t-4 border-x-4 border-muted-foreground/10" />
+      </div>
+
+      <div className="flex flex-col items-center gap-0.5">
+        <div className="flex items-baseline gap-1">
+          <span className="text-5xl font-black font-mono tracking-tighter text-foreground tabular-nums">
+            {Math.round(level)}
+          </span>
+          <span className="text-xl font-bold text-muted-foreground">%</span>
+        </div>
+        <span className="text-[10px] font-bold uppercase tracking-[0.25em] text-primary/80 animate-pulse">
+          Active Charge
+        </span>
+      </div>
+    </div>
+  )
+}
+
 function PlugAnimation() {
   return (
     <div className="flex flex-col items-center gap-4 py-4 w-full max-w-[280px]">
@@ -87,7 +133,8 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
   const [session, setSession] = useState<LiveSession | null>(null)
   const [finalBill, setFinalBill] = useState<{ kwh: number; cost: number } | null>(null)
   const [elapsedTime, setElapsedTime] = useState("00:00")
-  const [batteryLevel, setBatteryLevel] = useState(25)
+  const [batteryLevel, setBatteryLevel] = useState(30)
+  const startingBatteryLevelRef = useRef<number>(20 + Math.random() * 20)
   const startTimeRef = useRef<number | null>(null)
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const isMounted = useRef(true)
@@ -178,6 +225,15 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
     }
   }, [startBillingPoll])
 
+  // Update battery level based on real energy delivery (SoC simulation)
+  useEffect(() => {
+    if (session?.totalKwh !== undefined && status === "charging") {
+      // Assuming 1kWh = ~1.2% charge (typical for a ~80kWh battery)
+      const chargeGained = session.totalKwh * 1.2
+      setBatteryLevel(Math.min(startingBatteryLevelRef.current + chargeGained, 99))
+    }
+  }, [session?.totalKwh, status])
+
   // Update elapsed timer every second
   useEffect(() => {
     if (status !== "charging" || !startTimeRef.current) return
@@ -189,8 +245,6 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
       setElapsedTime(
         `${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`
       )
-      // Simulate battery creep
-      setBatteryLevel((prev) => Math.min(prev + 0.05, 100))
     }, 1000)
 
     return () => clearInterval(timer)
@@ -254,6 +308,12 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
       totalKwh: 0,
       totalCost: 0,
     })
+
+    // Set a realistic starting battery level
+    const startLevel = 20 + Math.random() * 30
+    startingBatteryLevelRef.current = startLevel
+    setBatteryLevel(startLevel)
+
     setStatus("charging")
     setIsWaitingForPlug(false)
     toast.success("Charging started!", { description: `Connected to ${chargerId}` })
@@ -339,6 +399,12 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         totalKwh: 0,
         totalCost: 0,
       })
+
+      // Set a realistic starting battery level
+      const startLevel = 20 + Math.random() * 30
+      startingBatteryLevelRef.current = startLevel
+      setBatteryLevel(startLevel)
+
       setStatus("charging")
       setIsWaitingForPlug(false)
 
@@ -628,18 +694,7 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
           {/* Battery visual */}
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center justify-between text-sm">
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <Battery className="h-4 w-4" />
-                Battery Level
-              </div>
-              <span className="font-semibold text-foreground">
-                {Math.round(batteryLevel)}%
-              </span>
-            </div>
-            <Progress value={batteryLevel} className="h-3" />
-          </div>
+          <BatteryChargingIndicator level={batteryLevel} />
 
           {/* Stats grid */}
           <div className="grid grid-cols-3 gap-3">

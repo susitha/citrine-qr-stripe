@@ -196,9 +196,9 @@ function AppContent() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-md px-4 pt-6 pb-2">
+      {/* <div className="mx-auto max-w-md px-4 pt-6 pb-2">
         <StepIndicator steps={STEPS} currentStep={stepIndex} />
-      </div>
+      </div> */}
 
       <div className="mx-auto max-w-md px-4 py-6">
         {step === "identity" && (
