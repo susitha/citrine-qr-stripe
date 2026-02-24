@@ -90,7 +90,13 @@ app.post(
             pollForTransactionId(chargerId, session.id, stripeCustomerId, paymentMethodId);
           }
         })
-        .catch(err => console.error("[Webhook] remoteStart error:", err.message));
+        .catch(err => {
+          if (err.message.startsWith("OCPP_ERROR:")) {
+            console.error(`[Webhook] remoteStart failed for ${chargerId} with OCPP error: ${err.message}. Skipping poll.`);
+          } else {
+            console.error("[Webhook] remoteStart error:", err.message);
+          }
+        });
     }
 
     res.json({ received: true });
@@ -176,19 +182,26 @@ app.get("/api/charger-status/:chargerId", async (req, res) => {
   const { chargerId } = req.params;
   try {
     // 1. Check our own sessions table first (it's immediate after remoteStart)
-    // Look for recent active/pending sessions for this charger, EXCLUDING placeholders
+    // Look for recent active OR pending sessions (created in the last 2 mins)
     const [localRows] = await pool.execute(
-      "SELECT transaction_id FROM sessions WHERE charger_id = ? AND status IN ('active', 'pending') AND transaction_id NOT LIKE 'pending_%' ORDER BY created_at DESC LIMIT 1",
+      `SELECT transaction_id, status FROM sessions 
+       WHERE charger_id = ? 
+       AND (
+         status = 'active' OR 
+         (status = 'pending' AND created_at > NOW() - INTERVAL 2 MINUTE)
+       )
+       ORDER BY created_at DESC LIMIT 1`,
       [chargerId]
     );
 
     if (localRows.length > 0) {
       const txId = localRows[0].transaction_id;
-      console.log(`[Status] Found real active session in local DB: ${txId} for charger ${chargerId}`);
+      const status = localRows[0].status;
+      console.log(`[Status] Found ${status} session in local DB: ${txId} for charger ${chargerId}`);
       return res.json({
         chargerId,
         status: "Occupied",
-        transactionId: txId,
+        transactionId: txId.startsWith("pending_") ? null : txId,
       });
     }
 
@@ -391,7 +404,13 @@ app.get("/api/start-direct/:chargerId", authenticateToken, async (req, res) => {
           pollForTransactionId(chargerId, null, customer.id, pm.id);
         }
       })
-      .catch(err => console.error("[DirectStart] remoteStart error:", err.message));
+      .catch(err => {
+        if (err.message.startsWith("OCPP_ERROR:")) {
+          console.error(`[DirectStart] remoteStart failed for ${chargerId} with OCPP error: ${err.message}. Skipping poll.`);
+        } else {
+          console.error("[DirectStart] remoteStart error:", err.message);
+        }
+      });
 
     res.json({ canDirect: true });
   } catch (err) {

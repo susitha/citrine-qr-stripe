@@ -183,5 +183,5 @@ async function checkFinishedTransactions() {
 }
 
 export function startBillingLoop() {
-  setInterval(checkFinishedTransactions, 15000);
+  setInterval(checkFinishedTransactions, 5000);
 }

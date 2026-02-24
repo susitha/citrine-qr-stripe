@@ -27,7 +27,22 @@ export async function remoteStart(chargerId, idTag = "DRIVER_001") {
     }),
   });
 
-  return res.json();
+  const data = await res.json();
+
+  // 1. Handle OCPP CallError: Citrine returns { _errorCode, _messageId }
+  if (data?._errorCode) {
+    console.error(`[Citrine] RemoteStart OCPP error for ${chargerId}: ${data._errorCode}`);
+    throw new Error(`OCPP_ERROR:${data._errorCode}`);
+  }
+
+  // 2. Handle failure responses in list format (e.g. [ { success: false, payload: '...' } ])
+  // This happens when the charger is fundamentally disconnected or unknown.
+  if (Array.isArray(data) && data[0]?.success === false) {
+    console.error(`[Citrine] RemoteStart failed for ${chargerId}: ${data[0].payload}`);
+    throw new Error(`OCPP_ERROR:FAILED_${data[0].payload || 'UNKNOWN'}`);
+  }
+
+  return data;
 }
 
 
@@ -59,7 +74,7 @@ export async function getTransactions() {
   try {
     const query = `
       query {
-        Transactions(limit: 50, order_by: {startTime: desc}) {
+        Transactions(limit: 100, order_by: {startTime: desc}) {
           id
           transactionId
           stationId
