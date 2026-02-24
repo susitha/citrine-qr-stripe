@@ -43,6 +43,7 @@ app.post(
         session.display_items?.[0]?.custom?.name ||
         "CHARGER123";
       const stripeCustomerId = session.customer || null;
+      console.log(`[Webhook-Debug] session.completed for charger ${chargerId}, customer ${stripeCustomerId}`);
 
       // Retrieve the payment method used in this checkout and attach to customer
       let paymentMethodId = null;
@@ -182,13 +183,13 @@ app.get("/api/charger-status/:chargerId", async (req, res) => {
   const { chargerId } = req.params;
   try {
     // 1. Check our own sessions table first (it's immediate after remoteStart)
-    // Look for recent active OR pending sessions (created in the last 2 mins)
+    // Look for recent active OR pending sessions (created in the last 10 mins)
     const [localRows] = await pool.execute(
       `SELECT transaction_id, status FROM sessions 
-       WHERE charger_id = ? 
+       WHERE LOWER(charger_id) = LOWER(?) 
        AND (
          status = 'active' OR 
-         (status = 'pending' AND created_at > NOW() - INTERVAL 2 MINUTE)
+         (status = 'pending' AND created_at > NOW() - INTERVAL 10 MINUTE)
        )
        ORDER BY created_at DESC LIMIT 1`,
       [chargerId]
@@ -363,6 +364,7 @@ app.get("/api/stop-charging/:chargerId/:transactionId", authenticateToken, async
 app.get("/api/start-direct/:chargerId", authenticateToken, async (req, res) => {
   const { chargerId } = req.params;
   const customerEmail = req.query.email;
+  console.log(`[DirectStart-Debug] Incoming request for charger ${chargerId}, email ${customerEmail}`);
   if (!customerEmail) return res.status(400).json({ error: "email required" });
 
   try {
@@ -487,6 +489,7 @@ app.get("/qr-generator", (req, res) => {
 app.get("/api/checkout/:chargerId", authenticateToken, async (req, res) => {
   const { chargerId } = req.params;
   const customerEmail = req.query.email || null;
+  console.log(`[Checkout-Debug] Requesting session for charger ${chargerId}, email ${customerEmail}`);
   const ip = getLocalIp();
   const frontendBase = `http://${ip}:${FRONTEND_PORT}`;
 
