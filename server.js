@@ -183,7 +183,7 @@ app.post("/api/auth/verify-otp", async (req, res) => {
     }
   } catch (err) {
     console.error("Auth verify-otp error:", err.message);
-    res.status(500).json({ error: "Internal server error" });
+    res.status(500).json({ error: err.message || "Internal server error" });
   }
 });
 

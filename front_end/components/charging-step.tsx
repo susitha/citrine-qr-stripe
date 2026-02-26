@@ -694,7 +694,7 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
           {/* Battery visual */}
-          <BatteryChargingIndicator level={batteryLevel} />
+          {/* <BatteryChargingIndicator level={batteryLevel} /> */}
 
           {/* Stats grid */}
           <div className="grid grid-cols-3 gap-3">

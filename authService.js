@@ -198,6 +198,9 @@ export async function verifyOTP(identifier, otp, session) {
         console.error('[Cognito] verifyOTP error:', err.name, err.message);
         if (err.name === 'CodeMismatchException') return { success: false, message: 'Incorrect code.' };
         if (err.name === 'ExpiredCodeException') return { success: false, message: 'Code expired.' };
+        if (err.name === 'NotAuthorizedException' && err.message.includes('expired')) {
+            return { success: false, message: 'Verification session expired. Please request a new code.' };
+        }
         throw err;
     }
 }

@@ -143,7 +143,14 @@ export function OtpStep({ identifier, chargerId, session, onVerified, onBack, on
           </InputOTP>
 
           {error && (
-            <p className="text-sm text-destructive text-center" role="alert">{error}</p>
+            <div className="flex flex-col gap-2 text-center">
+              <p className="text-sm text-destructive" role="alert">{error}</p>
+              {error.toLowerCase().includes("expired") && (
+                <p className="text-xs text-muted-foreground">
+                  Try clicking <span className="font-semibold text-primary">Resend code</span> below to get a new session.
+                </p>
+              )}
+            </div>
           )}
 
           <Button onClick={handleVerify} disabled={isLoading || otp.length !== 8} className="w-full">
