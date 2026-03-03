@@ -138,10 +138,11 @@ async function checkFinishedTransactions() {
       const txId = String(tx.transactionId);
       const chargerId = String(tx.stationId);
 
-      const pending = pendingRows.find(p =>
-        String(p.charger_id).toLowerCase() === chargerId.toLowerCase() &&
-        !linkedPendingIds.has(p.transaction_id)
-      );
+      const pending = pendingRows.find(p => {
+        const c1 = String(p.charger_id).toLowerCase().replace(/[^a-z0-9]/g, '');
+        const c2 = chargerId.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return (c1 === c2 || c1.includes(c2) || c2.includes(c1)) && !linkedPendingIds.has(p.transaction_id);
+      });
       if (!pending) continue;
 
       console.log(`[Billing] Linking tx ${txId} → pending ${pending.transaction_id}`);

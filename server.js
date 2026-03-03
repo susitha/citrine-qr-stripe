@@ -251,14 +251,19 @@ app.get("/api/charger-status/:chargerId", async (req, res) => {
     }
 
     // 4. Calculate if we are waiting for a physical plug-in
-    // If we have a local pending session but Citrine hasn't seen a transaction yet
-    const isWaitingForPlug = !!localRows[0] && !activeTx;
+    // isWaitingForPlug is TRUE if we have a local pending session AND no transaction is active in Citrine
+    // We use a guard to ensure it's a RECENT pending session
+    const hasRecentPending = localRows.length > 0 &&
+      localRows[0].status === 'pending' &&
+      new Date(localRows[0].created_at) > new Date(Date.now() - 5 * 60000);
+
+    const isWaitingForPlug = hasRecentPending && !activeTx;
 
     res.json({
       chargerId,
       status: activeTx ? "Occupied" : (localRows.length > 0 ? "Occupied" : "Available"),
       transactionId: activeTx?.transactionId !== undefined ? activeTx.transactionId : null,
-      isWaitingForPlug
+      isWaitingForPlug: !!isWaitingForPlug
     });
   } catch (err) {
     console.error("Charger status check error:", err.message);
@@ -546,10 +551,12 @@ async function startCharging(chargerId, userIdTag) {
 
     const res = await remoteStart(chargerId, userIdTag);
 
-    if (res[0]?.success || res.status === 'Accepted') {
+    if (res[0]?.success || res.status === 'Accepted' || res.status === 'Accepted' || (Array.isArray(res) && res[0]?.status === 'Accepted')) {
       console.log("Charging remote start command accepted!", res);
     } else {
       console.error("Failed to start charging:", res);
+      // Cleanup the pending session if it failed immediately
+      await pool.execute("DELETE FROM sessions WHERE transaction_id = ?", [pendingId]);
       return;
     }
 

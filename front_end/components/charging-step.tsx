@@ -278,13 +278,13 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
 
         console.log(`[Charging] Poll attempt ${attempts + 1}/${maxAttempts} for ${chargerId}:`, statusData.chargerStatus)
 
-        if (statusData.chargerStatus?.isWaitingForPlug) {
-          setIsWaitingForPlug(true)
-        }
+        // Sync the plug state — if it's no longer waiting, this should be false
+        setIsWaitingForPlug(!!statusData.chargerStatus?.isWaitingForPlug)
 
         if (statusData.chargerStatus?.transactionId !== null && statusData.chargerStatus?.transactionId !== undefined) {
           transactionId = String(statusData.chargerStatus.transactionId)
           console.log(`[Charging] CONFIRMED: transactionId=${transactionId}`)
+          setIsWaitingForPlug(false) // Safety override if tx found
         }
       } catch (err) {
         console.error(`[Charging] Poll error on attempt ${attempts + 1}:`, err)
@@ -373,12 +373,12 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
         const statusData = await statusRes.json()
 
-        if (statusData.chargerStatus?.isWaitingForPlug) {
-          setIsWaitingForPlug(true)
-        }
+        // Sync the plug state
+        setIsWaitingForPlug(!!statusData.chargerStatus?.isWaitingForPlug)
 
         if (statusData.chargerStatus?.transactionId) {
           transactionId = statusData.chargerStatus.transactionId
+          setIsWaitingForPlug(false) // Safety override
         }
         attempts++
       }
