@@ -10,6 +10,8 @@ import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
+import pool from './db.js';
+import { registerIdTag } from './citrineService.js';
 
 dotenv.config();
 
@@ -43,6 +45,8 @@ const jwks = jwksClient({
     jwksUri: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}/.well-known/jwks.json`,
     cache: true,
     cacheMaxAge: 600000,
+    rateLimit: true,
+    jwksRequestsPerMinute: 10
 });
 
 /**
@@ -55,8 +59,14 @@ function getCognitoUsername(identifier) {
 }
 
 function getSigningKey(header, callback) {
+    if (!header || !header.kid) {
+        return callback(new Error("No kid in JWT header"));
+    }
     jwks.getSigningKey(header.kid, (err, key) => {
-        if (err) return callback(err);
+        if (err) {
+            console.error(`[Auth-JWKS] Failed to get signing key for kid ${header.kid}:`, err.message);
+            return callback(err);
+        }
         callback(null, key.getPublicKey());
     });
 }
@@ -187,12 +197,42 @@ export async function verifyOTP(identifier, otp, session) {
 
         const { AccessToken, IdToken } = res.AuthenticationResult;
         const decoded = jwt.decode(IdToken);
+        const sub = decoded.sub;
+        const email = decoded.email;
 
-        console.log(`[Cognito] ${challengeName} verified for ${username}`);
+        // --- ID Tag Automation ---
+        // 1. Check if user already has an id_tag in local DB
+        let idTag = null;
+        try {
+            const [rows] = await pool.execute("SELECT id_tag FROM users WHERE email = ?", [email]);
+            if (rows.length > 0 && rows[0].id_tag) {
+                idTag = rows[0].id_tag;
+            } else {
+                // 2. If not, generate a new one
+                idTag = "VOLT_" + crypto.randomBytes(4).toString('hex').toUpperCase();
+                console.log(`[Auth] Generating new ID Tag for ${email}: ${idTag}`);
+
+                // 3. Store in local DB (upsert user)
+                await pool.execute(
+                    "INSERT INTO users (email, id_tag) VALUES (?, ?) ON DUPLICATE KEY UPDATE id_tag = ?",
+                    [email, idTag, idTag]
+                );
+
+                // 4. Register in CitrineOS
+                const regResult = await registerIdTag(idTag);
+                if (!regResult.success) {
+                    console.error(`[Auth] Failed to register ID Tag ${idTag} in CitrineOS. User might need manual setup.`);
+                }
+            }
+        } catch (dbErr) {
+            console.error("[Auth] Database error during ID Tag check:", dbErr.message);
+        }
+
+        console.log(`[Cognito] ${challengeName} verified for ${username} (id_tag: ${idTag})`);
         return {
             success: true,
-            token: AccessToken,
-            user: { id: decoded.sub, email: decoded.email, phone: decoded.phone_number },
+            token: IdToken,
+            user: { id: sub, email: email, phone: decoded.phone_number, id_tag: idTag },
         };
     } catch (err) {
         console.error('[Cognito] verifyOTP error:', err.name, err.message);
@@ -206,9 +246,45 @@ export async function verifyOTP(identifier, otp, session) {
 }
 
 /**
- * Express middleware — verify Cognito AccessToken from Authorization header.
+ * Ensure a user has an id_tag, generating/registering one if missing.
  */
-export function authenticateToken(req, res, next) {
+export async function getOrCreateIdTag(email) {
+    if (!email) {
+        console.error("[Auth] getOrCreateIdTag: email is missing");
+        return null;
+    }
+    try {
+        const [rows] = await pool.execute("SELECT id_tag FROM users WHERE email = ?", [email]);
+        if (rows.length > 0 && rows[0].id_tag) {
+            return rows[0].id_tag;
+        }
+
+        // Generate and store
+        const idTag = "VOLT_" + crypto.randomBytes(4).toString('hex').toUpperCase();
+        console.log(`[Auth] getOrCreateIdTag: Generating new tag for ${email}: ${idTag}`);
+
+        await pool.execute(
+            "INSERT INTO users (email, id_tag) VALUES (?, ?) ON DUPLICATE KEY UPDATE id_tag = ?",
+            [email, idTag, idTag]
+        );
+
+        // Register in CitrineOS
+        const regResult = await registerIdTag(idTag);
+        if (!regResult.success) {
+            console.error(`[Auth] getOrCreateIdTag: CitrineOS registration failed for ${idTag}`);
+        }
+
+        return idTag;
+    } catch (err) {
+        console.error("[Auth] getOrCreateIdTag error:", err.message);
+        return null;
+    }
+}
+
+/**
+ * Middleware: Verify Cognito JWT
+ */
+export async function authenticateToken(req, res, next) {
     const token = req.headers['authorization']?.split(' ')[1];
     if (!token) {
         console.warn(`[Auth-Debug] No token provided for ${req.path}`);
@@ -218,12 +294,28 @@ export function authenticateToken(req, res, next) {
     jwt.verify(token, getSigningKey, {
         algorithms: ['RS256'],
         issuer: `https://cognito-idp.${REGION}.amazonaws.com/${USER_POOL_ID}`,
-    }, (err, decoded) => {
+    }, async (err, decoded) => {
         if (err) {
             console.error(`[Auth-Debug] Token verification failed for ${req.path}:`, err.message);
             return res.status(403).json({ error: 'Invalid or expired token' });
         }
-        req.user = { id: decoded.sub, email: decoded.email };
+
+        const email = decoded.email || decoded['cognito:username'] || null;
+        console.log(`[Auth-Debug] Token verified for: ${email} (sub: ${decoded.sub})`);
+
+        if (!email) {
+            console.warn(`[Auth-Debug] No email found in token for ${req.path}`);
+        }
+
+        let idTag = null;
+        try {
+            const [rows] = await pool.execute("SELECT id_tag FROM users WHERE email = ?", [email]);
+            idTag = rows[0]?.id_tag || null;
+        } catch (dbErr) {
+            console.error("[Auth] DB error in authenticateToken:", dbErr.message);
+        }
+
+        req.user = { id: decoded.sub, email: email, idTag: idTag };
         next();
     });
 }

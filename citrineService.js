@@ -105,3 +105,52 @@ export async function getTransactions() {
     return [];
   }
 }
+
+/**
+ * Register a new ID Tag in CitrineOS via GraphQL
+ */
+export async function registerIdTag(idTag, type = "Central", tenantId = 1) {
+  const mutation = `
+    mutation($object: Authorizations_insert_input!) {
+      insert_Authorizations_one(object: $object) {
+        idToken
+        status
+      }
+    }
+  `;
+
+  const now = new Date().toISOString();
+  const variables = {
+    object: {
+      idToken: idTag,
+      idTokenType: type,
+      tenantId: tenantId,
+      status: "Accepted",
+      createdAt: now,
+      updatedAt: now
+    }
+  };
+
+  try {
+    const res = await fetch(HASURA_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.CITRINE_API_KEY}`
+      },
+      body: JSON.stringify({ query: mutation, variables }),
+    });
+
+    const data = await res.json();
+    if (data.errors) {
+      console.error("[Citrine] registerIdTag GraphQL Errors:", JSON.stringify(data.errors));
+      return { success: false, errors: data.errors };
+    }
+
+    console.log(`[Citrine] ID Tag registered successfully: ${idTag} with status: ${data.data.insert_Authorizations_one.status}`);
+    return { success: true, data: data.data.insert_Authorizations_one };
+  } catch (err) {
+    console.error("[Citrine] registerIdTag failed:", err.message);
+    return { success: false, error: err.message };
+  }
+}

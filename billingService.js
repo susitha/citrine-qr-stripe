@@ -22,6 +22,7 @@ export async function registerSession(transactionId, chargerId, checkoutId, user
        ON DUPLICATE KEY UPDATE
          status = VALUES(status),
          checkout_id = VALUES(checkout_id),
+         user_id_tag = COALESCE(VALUES(user_id_tag), user_id_tag),
          stripe_customer_id = COALESCE(VALUES(stripe_customer_id), stripe_customer_id),
          payment_method_id = COALESCE(VALUES(payment_method_id), payment_method_id)`,
       [transactionId, chargerId, checkoutId, userIdTag, stripeCustomerId, paymentMethodId, status]
@@ -110,7 +111,7 @@ async function checkFinishedTransactions() {
 
     // 1. Fetch ALL existing transaction/pending sessions
     const [allRows] = await pool.execute(
-      "SELECT transaction_id, status, charger_id, checkout_id, stripe_customer_id, payment_method_id, final_charged FROM sessions"
+      "SELECT transaction_id, status, charger_id, checkout_id, user_id_tag, stripe_customer_id, payment_method_id, final_charged FROM sessions"
     );
     const existingIds = new Set(allRows.map(r => String(r.transaction_id)));
 
@@ -145,13 +146,14 @@ async function checkFinishedTransactions() {
       });
       if (!pending) continue;
 
-      console.log(`[Billing] Linking tx ${txId} → pending ${pending.transaction_id}`);
-      await registerSession(txId, tx.stationId, pending.checkout_id, null, pending.stripe_customer_id, pending.payment_method_id);
+      console.log(`[Billing] Linking tx ${txId} → pending ${pending.transaction_id} (tag: ${pending.user_id_tag})`);
+      await registerSession(txId, tx.stationId, pending.checkout_id, pending.user_id_tag, pending.stripe_customer_id, pending.payment_method_id);
 
       realActive.push({
         transaction_id: txId,
         charger_id: tx.stationId,
         checkout_id: pending.checkout_id,
+        user_id_tag: pending.user_id_tag,
         stripe_customer_id: pending.stripe_customer_id,
         payment_method_id: pending.payment_method_id,
         final_charged: false

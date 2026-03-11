@@ -9,7 +9,7 @@ export const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 Create Checkout (QR payment)
 Saves the card for future off-session charges via setup_future_usage.
 */
-export async function createCheckoutSession(chargerId, frontendBase, customerEmail) {
+export async function createCheckoutSession(chargerId, frontendBase, customerEmail, idTag = null) {
   const currency = process.env.CURRENCY || "usd";
   const base = frontendBase || process.env.DOMAIN || "http://localhost:3001";
 
@@ -41,7 +41,7 @@ export async function createCheckoutSession(chargerId, frontendBase, customerEma
     },
     success_url: `${base}/?chargerId=${chargerId}&paid=true`,
     cancel_url: `${base}/?chargerId=${chargerId}&cancelled=true`,
-    metadata: { chargerId, customerEmail: customerEmail || "" },
+    metadata: { chargerId, customerEmail: customerEmail || "", idTag: idTag || "" },
   };
 
   if (customer) sessionParams.customer = customer.id;

@@ -7,7 +7,7 @@ import cors from "cors";
 import { createCheckoutSession } from "./stripeService.js";
 import { remoteStart, getTransactions, remoteStop } from "./citrineService.js";
 import { registerSession, startBillingLoop } from "./billingService.js";
-import { requestOTP, verifyOTP, authenticateToken } from "./authService.js";
+import { requestOTP, verifyOTP, authenticateToken, getOrCreateIdTag } from "./authService.js";
 import pool from "./db.js";
 
 dotenv.config();
@@ -76,19 +76,31 @@ app.post(
       }
 
       // Store immediately with payment_method_id so billing doesn't need to list cards later
-      await registerSession("pending_" + session.id, chargerId, session.id, null, stripeCustomerId, paymentMethodId);
+      let idTag = session.metadata?.idTag;
+      const customerEmail = session.metadata?.customerEmail;
 
-      const idTag = process.env.OCPP_ID_TAG || "0123456789ABCD";
+      if (!idTag && customerEmail) {
+        console.log(`[Webhook] idTag missing in metadata, attempting to resolve for ${customerEmail}`);
+        idTag = await getOrCreateIdTag(customerEmail);
+      }
+
+      if (!idTag) {
+        idTag = process.env.OCPP_ID_TAG || "0123456789ABCD";
+      }
+
+      await registerSession("pending_" + session.id, chargerId, session.id, idTag, stripeCustomerId, paymentMethodId);
+
+      console.log(`[Webhook] Starting remoteStart for ${chargerId} with idTag: ${idTag}`);
       remoteStart(chargerId, idTag)
         .then(result => {
           console.log(`[Webhook] remoteStart response for ${chargerId}:`, JSON.stringify(result));
           const transactionId = result?.transactionId;
           if (transactionId) {
             console.log(`[Webhook] Got transactionId ${transactionId} — linking checkout ${session.id}`);
-            registerSession(transactionId, chargerId, session.id, null, stripeCustomerId, paymentMethodId);
+            registerSession(transactionId, chargerId, session.id, idTag, stripeCustomerId, paymentMethodId);
           } else {
             console.log("[Webhook] remoteStart returned no transactionId — starting background poll");
-            pollForTransactionId(chargerId, session.id, stripeCustomerId, paymentMethodId);
+            pollForTransactionId(chargerId, session.id, stripeCustomerId, paymentMethodId, idTag);
           }
         })
         .catch(err => {
@@ -274,7 +286,7 @@ app.get("/api/charger-status/:chargerId", async (req, res) => {
 /**
  * Helper to poll for a transaction ID in the background if remoteStart didn't return it
  */
-async function pollForTransactionId(chargerId, checkoutId, customerId, paymentMethodId) {
+async function pollForTransactionId(chargerId, checkoutId, customerId, paymentMethodId, userIdTag = null) {
   let transactionId = null;
   let attempts = 0;
   const maxAttempts = 30; // 30 * 4s = 120 seconds (background poll is now longer)
@@ -300,7 +312,7 @@ async function pollForTransactionId(chargerId, checkoutId, customerId, paymentMe
       if (tx?.transactionId) {
         transactionId = tx.transactionId;
         console.log(`[Poll] SUCCESS: Found transactionId ${transactionId} for ${chargerId} on attempt ${attempts + 1}`);
-        await registerSession(transactionId, chargerId, checkoutId, null, customerId, paymentMethodId);
+        await registerSession(transactionId, chargerId, checkoutId, userIdTag, customerId, paymentMethodId);
       } else {
         console.log(`[Poll] Attempt ${attempts + 1}/${maxAttempts}: No active tx in ${transactions.length} records for ${chargerId}`);
       }
@@ -409,22 +421,24 @@ app.get("/api/start-direct/:chargerId", authenticateToken, async (req, res) => {
 
     // Register pending session immediately with customer + PM
     const pendingId = "pending_direct_" + Date.now();
-    console.log(`[DirectStart-Debug] Registering manual start for ${chargerId} (pendingId: ${pendingId})`);
-    await registerSession(pendingId, chargerId, null, null, customer.id, pm.id);
+    const idTag = req.user.idTag || await getOrCreateIdTag(req.user.email);
+    req.user.idTag = idTag;
+
+    console.log(`[DirectStart-Debug] Registering manual start for ${chargerId} (pendingId: ${pendingId}, idTag: ${idTag})`);
+    await registerSession(pendingId, chargerId, null, idTag, customer.id, pm.id);
 
     // Fire remoteStart async
-    const idTag = process.env.OCPP_ID_TAG || "0123456789ABCD";
-    console.log(`[DirectStart] Starting charger ${chargerId} for customer ${customer.id} (pm: ${pm.id})`);
+    console.log(`[DirectStart] Starting charger ${chargerId} for customer ${customer.id} (pm: ${pm.id}, idTag: ${idTag})`);
     remoteStart(chargerId, idTag)
       .then(result => {
         console.log(`[DirectStart] remoteStart response for ${chargerId}:`, JSON.stringify(result));
         const transactionId = result?.transactionId;
         if (transactionId) {
           console.log(`[DirectStart] Got transactionId ${transactionId}`);
-          registerSession(transactionId, chargerId, null, null, customer.id, pm.id);
+          registerSession(transactionId, chargerId, null, idTag, customer.id, pm.id);
         } else {
           console.log(`[DirectStart] No immediate transactionId — starting background poll`);
-          pollForTransactionId(chargerId, null, customer.id, pm.id);
+          pollForTransactionId(chargerId, null, customer.id, pm.id, idTag);
         }
       })
       .catch(err => {
@@ -515,11 +529,15 @@ app.get("/api/checkout/:chargerId", authenticateToken, async (req, res) => {
   const frontendBase = `http://${ip}:${FRONTEND_PORT}`;
 
   try {
-    const session = await createCheckoutSession(chargerId, frontendBase, customerEmail);
+    // Ensure user has an ID Tag
+    const idTag = req.user.idTag || await getOrCreateIdTag(req.user.email);
+    req.user.idTag = idTag; // Update local obj for consistency
+
+    const session = await createCheckoutSession(chargerId, frontendBase, customerEmail, idTag);
 
     // Register a pre-session so the charger looks Occupied while the user handles Stripe
-    console.log(`[Checkout-Debug] Pre-registering session for ${chargerId} (session: ${session.id})`);
-    await registerSession("pending_pre_" + session.id, chargerId, session.id);
+    console.log(`[Checkout-Debug] Pre-registering session for ${chargerId} (session: ${session.id}, idTag: ${idTag})`);
+    await registerSession("pending_pre_" + session.id, chargerId, session.id, idTag);
 
     res.json({ url: session.url });
   } catch (err) {
@@ -533,9 +551,10 @@ app.get("/api/checkout/:chargerId", authenticateToken, async (req, res) => {
 Create charging session (called by Next.js proxy after OTP verification)
 */
 app.get("/create-session/:chargerId/:userIdTag", authenticateToken, async (req, res) => {
-  const { chargerId, userIdTag } = req.params;
-  console.log(`[Server] Received create-session request: Charger=${chargerId}, User=${userIdTag}`);
-  startCharging(chargerId, userIdTag);
+  const { chargerId, userIdTag: urlIdTag } = req.params;
+  const idTag = req.user.idTag || await getOrCreateIdTag(req.user.email) || urlIdTag;
+  console.log(`[Server] Received create-session request: Charger=${chargerId}, UserTag=${idTag} (from req.user: ${req.user.idTag}, from url: ${urlIdTag})`);
+  startCharging(chargerId, idTag);
   res.json({ success: true, message: "Charging initiation sequence started" });
 });
 
