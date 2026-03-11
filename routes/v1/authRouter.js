@@ -4,9 +4,48 @@ import { requestOTP, verifyOTP } from "../../authService.js";
 const router = express.Router();
 
 /**
- * @route   POST /api/v1/auth/request-otp
- * @desc    Request an OTP for email or phone
- * @access  Public
+ * @swagger
+ * tags:
+ *   name: Authentication
+ *   description: User authentication and OTP management
+ */
+
+/**
+ * @swagger
+ * /api/v1/auth/request-otp:
+ *   post:
+ *     summary: Request an OTP
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: user@example.com
+ *               phone:
+ *                 type: string
+ *                 example: "+1234567890"
+ *     responses:
+ *       200:
+ *         description: OTP sent successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     message:
+ *                       type: string
+ *                     session:
+ *                       type: string
  */
 router.post("/request-otp", async (req, res) => {
     const method = process.env.OTP_METHOD || 'email';
@@ -41,9 +80,44 @@ router.post("/request-otp", async (req, res) => {
 });
 
 /**
- * @route   POST /api/v1/auth/verify-otp
- * @desc    Verify OTP and return JWT
- * @access  Public
+ * @swagger
+ * /api/v1/auth/verify-otp:
+ *   post:
+ *     summary: Verify OTP and get JWT
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [otp, session]
+ *             properties:
+ *               email:
+ *                 type: string
+ *               phone:
+ *                 type: string
+ *               otp:
+ *                 type: string
+ *               session:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Verified successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     token:
+ *                       type: string
+ *                     user:
+ *                       type: object
  */
 router.post("/verify-otp", async (req, res) => {
     const method = process.env.OTP_METHOD || 'email';

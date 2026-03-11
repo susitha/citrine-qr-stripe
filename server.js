@@ -3,6 +3,8 @@ import dotenv from "dotenv";
 import QRCode from "qrcode";
 import os from "os";
 import cors from "cors";
+import swaggerJsdoc from "swagger-jsdoc";
+import swaggerUi from "swagger-ui-express";
 
 import { registerSession, startBillingLoop } from "./billingService.js";
 import { authenticateToken, getOrCreateIdTag } from "./authService.js";
@@ -142,6 +144,42 @@ app.use(cors({
   methods: ["GET", "POST", "PATCH", "OPTIONS", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
+
+// Swagger configuration
+const swaggerOptions = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "Citrine Charging API",
+      version: "1.0.0",
+      description: "API documentation for the Citrine QR Stripe charging platform",
+    },
+    servers: [
+      {
+        url: `http://localhost:${PORT}`,
+        description: "Development server",
+      },
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+        },
+      },
+    },
+    security: [
+      {
+        bearerAuth: [],
+      },
+    ],
+  },
+  apis: ["./routes/v1/*.js", "./server.js"], // Path to the API docs
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // 🔹 V1 API Routes
 app.use("/api/v1/auth", authRouter);

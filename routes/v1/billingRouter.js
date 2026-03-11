@@ -7,9 +7,49 @@ import pool from "../../db.js";
 const router = express.Router();
 
 /**
- * @route   POST /api/v1/billing/checkout
- * @desc    Create a Stripe Checkout session
- * @access  Private
+ * @swagger
+ * tags:
+ *   name: Billing
+ *   description: Payments and Stripe checkout
+ */
+
+/**
+ * @swagger
+ * /api/v1/billing/checkout:
+ *   post:
+ *     summary: Create checkout session
+ *     tags: [Billing]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [chargerId]
+ *             properties:
+ *               chargerId:
+ *                 type: string
+ *               frontendOrigin:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Checkout URL generated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     checkoutUrl:
+ *                       type: string
+ *                     sessionId:
+ *                       type: string
  */
 router.post("/checkout", authenticateToken, async (req, res) => {
     const { chargerId } = req.body;
@@ -60,9 +100,16 @@ router.post("/checkout", authenticateToken, async (req, res) => {
 });
 
 /**
- * @route   GET /api/v1/billing/direct-status
- * @desc    Check if user has a saved card for direct start
- * @access  Private
+ * @swagger
+ * /api/v1/billing/direct-status:
+ *   get:
+ *     summary: Check direct charging status
+ *     tags: [Billing]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Direct charging capability retrieved
  */
 router.get("/direct-status", authenticateToken, async (req, res) => {
     const email = req.user.email;
@@ -93,9 +140,16 @@ router.get("/direct-status", authenticateToken, async (req, res) => {
 });
 
 /**
- * @route   GET /api/v1/billing/history
- * @desc    Get user's charging history
- * @access  Private
+ * @swagger
+ * /api/v1/billing/history:
+ *   get:
+ *     summary: Get charging history
+ *     tags: [Billing]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: History retrieved
  */
 router.get("/history", authenticateToken, async (req, res) => {
     const idTag = req.user.idTag;

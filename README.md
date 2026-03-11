@@ -1,2 +1,2 @@
 # Citrine QR Stripe
-[API v1 Documentation](file:///Users/susithajanaka/Trial/citrine-qr-stripe/api_docs_v1.md)
+[Live API Documentation (Swagger)](http://localhost:3000/api-docs)

@@ -8,9 +8,45 @@ import { stripe } from "../../stripeService.js";
 const router = express.Router();
 
 /**
- * @route   GET /api/v1/charger/status/:chargerId
- * @desc    Get charger status and current active session if any
- * @access  Public (Status is public, but details might be masked)
+ * @swagger
+ * tags:
+ *   name: Chargers
+ *   description: Charger status and session control
+ */
+
+/**
+ * @swagger
+ * /api/v1/charger/status/{chargerId}:
+ *   get:
+ *     summary: Get charger status
+ *     tags: [Chargers]
+ *     parameters:
+ *       - in: path
+ *         name: chargerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Charger status retrieved
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     chargerId:
+ *                       type: string
+ *                     status:
+ *                       type: string
+ *                     transactionId:
+ *                       type: string
+ *                     isWaitingForPlug:
+ *                       type: boolean
  */
 router.get("/status/:chargerId", async (req, res) => {
     const { chargerId } = req.params;
@@ -80,9 +116,26 @@ router.get("/status/:chargerId", async (req, res) => {
 });
 
 /**
- * @route   GET /api/v1/charger/session/:transactionId
- * @desc    Get detailed telemetry for a specific session
- * @access  Private
+ * @swagger
+ * /api/v1/charger/session/{transactionId}:
+ *   get:
+ *     summary: Get session details
+ *     tags: [Chargers]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: transactionId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Session details retrieved
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
  */
 router.get("/session/:transactionId", authenticateToken, async (req, res) => {
     const { transactionId } = req.params;
@@ -126,9 +179,26 @@ router.get("/session/:transactionId", authenticateToken, async (req, res) => {
 });
 
 /**
- * @route   POST /api/v1/charger/start
- * @desc    Start a charging session
- * @access  Private
+ * @swagger
+ * /api/v1/charger/start:
+ *   post:
+ *     summary: Start charging
+ *     tags: [Chargers]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [chargerId]
+ *             properties:
+ *               chargerId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Start command sent
  */
 router.post("/start", authenticateToken, async (req, res) => {
     const { chargerId } = req.body;
@@ -147,9 +217,28 @@ router.post("/start", authenticateToken, async (req, res) => {
 });
 
 /**
- * @route   POST /api/v1/charger/stop
- * @desc    Stop a charging session
- * @access  Private
+ * @swagger
+ * /api/v1/charger/stop:
+ *   post:
+ *     summary: Stop charging
+ *     tags: [Chargers]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [chargerId, transactionId]
+ *             properties:
+ *               chargerId:
+ *                 type: string
+ *               transactionId:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Stop command sent
  */
 router.post("/stop", authenticateToken, async (req, res) => {
     const { chargerId, transactionId } = req.body;
