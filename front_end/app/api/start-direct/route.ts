@@ -16,14 +16,30 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: "chargerId and email are required" }, { status: 400 })
     }
 
-    const url = `${BACKEND_URL}/api/start-direct/${encodeURIComponent(chargerId)}?email=${encodeURIComponent(email)}`;
-    console.log(`[Proxy-Debug] GET ${url}`);
+    const headers = { Authorization: token || "" }
 
-    const res = await fetch(
-        url,
-        { headers: { Authorization: token || "" } }
-    )
-    const data = await res.json()
-    if (!res.ok) return NextResponse.json({ error: data.error }, { status: res.status })
-    return NextResponse.json(data)
+    // 1. Check if user has a card
+    const statusRes = await fetch(`${BACKEND_URL}/api/v1/billing/direct-status`, { headers })
+    const statusData = await statusRes.json()
+
+    if (!statusRes.ok || !statusData.success || !statusData.data.hasCard) {
+        return NextResponse.json({ canDirect: false }, { status: statusRes.status })
+    }
+
+    // 2. Start charging
+    const startRes = await fetch(`${BACKEND_URL}/api/v1/charger/start`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            ...headers
+        },
+        body: JSON.stringify({ chargerId })
+    })
+
+    const startData = await startRes.json()
+    if (!startRes.ok || !startData.success) {
+        return NextResponse.json({ error: startData.error }, { status: startRes.status })
+    }
+
+    return NextResponse.json({ canDirect: true })
 }

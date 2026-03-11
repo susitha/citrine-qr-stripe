@@ -4,11 +4,17 @@ import QRCode from "qrcode";
 import os from "os";
 import cors from "cors";
 
-import { createCheckoutSession } from "./stripeService.js";
-import { remoteStart, getTransactions, remoteStop } from "./citrineService.js";
 import { registerSession, startBillingLoop } from "./billingService.js";
-import { requestOTP, verifyOTP, authenticateToken, getOrCreateIdTag } from "./authService.js";
+import { authenticateToken, getOrCreateIdTag } from "./authService.js";
+import { remoteStart, getTransactions, remoteStop } from "./citrineService.js";
+import { pollForTransactionId } from "./chargerService.js";
+import { getLocalIp } from "./utils.js";
 import pool from "./db.js";
+
+// V1 Routers
+import authRouter from "./routes/v1/authRouter.js";
+import chargerRouter from "./routes/v1/chargerRouter.js";
+import billingRouter from "./routes/v1/billingRouter.js";
 
 dotenv.config();
 
@@ -133,352 +139,31 @@ app.use((req, res, next) => {
 
 app.use(cors({
   origin: [`http://localhost:${FRONTEND_PORT}`, `http://127.0.0.1:${FRONTEND_PORT}`],
-  methods: ["GET", "POST", "PATCH", "OPTIONS"],
+  methods: ["GET", "POST", "PATCH", "OPTIONS", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
-function getLocalIp() {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === "IPv4" && !iface.internal) {
-        return iface.address;
-      }
-    }
-  }
-  return "localhost";
-}
+// 🔹 V1 API Routes
+app.use("/api/v1/auth", authRouter);
+app.use("/api/v1/charger", chargerRouter);
+app.use("/api/v1/billing", billingRouter);
+
 
 // Serve static files (HTML, CSS, JS) from the 'public' folder (legacy)
 app.use(express.static("public"));
 
 /**
- * 🔹 Auth API: Request OTP (Cognito EMAIL_OTP or SMS_OTP)
- */
-app.post("/api/auth/request-otp", async (req, res) => {
-  const method = process.env.OTP_METHOD || 'email';
-  const { email, phone } = req.body;
-  console.log(`[Cognito-Debug] Requesting OTP. Method=${method}, Email=${email}, Phone=${phone}`);
-  const identifier = method === 'sms' ? phone : email;
-
-  if (!identifier) {
-    return res.status(400).json({ error: `${method === 'sms' ? 'Phone' : 'Email'} is required` });
-  }
-
-  try {
-    const result = await requestOTP(identifier);
-    res.json({ success: true, message: `OTP sent to your ${method}`, session: result.session });
-  } catch (err) {
-    console.error("Auth request-otp error:", err.message);
-    res.status(500).json({ error: "Failed to send OTP: " + err.message });
-  }
-});
-
-/**
- * 🔹 Auth API: Verify OTP
- */
-app.post("/api/auth/verify-otp", async (req, res) => {
-  const method = process.env.OTP_METHOD || 'email';
-  const { email, phone, otp, session } = req.body;
-  const identifier = method === 'sms' ? phone : email;
-
-  if (!identifier || !otp || !session) {
-    return res.status(400).json({ error: "Identifier, OTP, and session are required" });
-  }
-
-  try {
-    const result = await verifyOTP(identifier, otp, session);
-    if (result.success) {
-      res.json({ success: true, token: result.token, user: result.user });
-    } else {
-      res.status(401).json({ error: result.message });
-    }
-  } catch (err) {
-    console.error("Auth verify-otp error:", err.message);
-    res.status(500).json({ error: err.message || "Internal server error" });
-  }
-});
-
-/**
- * 🔹 API: Get charger status
- */
-app.get("/api/charger-status/:chargerId", async (req, res) => {
-  const { chargerId } = req.params;
-  try {
-    // 1. Check our own sessions table first (it's immediate after remoteStart)
-    // Look for recent active OR pending sessions (created in the last 10 mins)
-    const [localRows] = await pool.execute(
-      `SELECT transaction_id, status FROM sessions 
-       WHERE LOWER(charger_id) = LOWER(?) 
-       AND (
-         status = 'active' OR 
-         (status = 'pending' AND created_at > UTC_TIMESTAMP() - INTERVAL 10 MINUTE)
-       )
-       ORDER BY (status = 'active') DESC, created_at DESC LIMIT 1`,
-      [chargerId]
-    );
-
-    let activeTx = null;
-    let fallbackToCitrine = true;
-
-    if (localRows.length > 0) {
-      const status = localRows[0].status;
-      if (status === 'active') {
-        const txId = localRows[0].transaction_id;
-        if (!String(txId).startsWith("pending")) {
-          // If it's already a real active session in DB, we don't NEED to check Citrine
-          activeTx = { transactionId: txId, stationId: chargerId, isActive: true };
-          fallbackToCitrine = false;
-          console.log(`[Status] Found active session in local DB: ${txId} for charger ${chargerId}`);
-        }
-      }
-    }
-
-    if (fallbackToCitrine) {
-      // 2. Fallback to Citrine GraphQL (slower/backup)
-      console.log(`[Status] ${new Date().toISOString()} | Checking Citrine for ${chargerId}...`);
-      const transactions = await getTransactions();
-
-      // Find active transaction for this charger
-      const cid = chargerId.toLowerCase().trim();
-      const fiveMinsAgo = new Date(Date.now() - 5 * 60000);
-
-      activeTx = transactions.find(tx => {
-        const sid = String(tx.stationId || "").toLowerCase().trim();
-        const hasEnded = !!tx.endTime;
-        const startedRecently = tx.startTime && new Date(tx.startTime) > fiveMinsAgo;
-        const isActive = (tx.isActive === true || tx.isActive === "true" || (!hasEnded && (tx.startTime || startedRecently)));
-
-        const matches = sid === cid || sid.includes(cid) || cid.includes(sid);
-        return matches && isActive;
-      });
-
-      if (!activeTx && transactions.length > 0) {
-        const myTxs = transactions.filter(t => String(t.stationId || "").toLowerCase().trim().includes(cid));
-        if (myTxs.length > 0) {
-          const latest = myTxs[0];
-          console.log(`[Status] Found ${myTxs.length} past sessions for ${chargerId}. Latest: ID=${latest.transactionId}, Active=${latest.isActive}, EndTime=${latest.endTime}`);
-        }
-      }
-    }
-
-    // 4. Calculate if we are waiting for a physical plug-in
-    // isWaitingForPlug is TRUE if we have a local pending session AND no transaction is active in Citrine
-    // We use a guard to ensure it's a RECENT pending session
-    const hasRecentPending = localRows.length > 0 &&
-      localRows[0].status === 'pending' &&
-      new Date(localRows[0].created_at) > new Date(Date.now() - 5 * 60000);
-
-    const isWaitingForPlug = hasRecentPending && !activeTx;
-
-    res.json({
-      chargerId,
-      status: activeTx ? "Occupied" : (localRows.length > 0 ? "Occupied" : "Available"),
-      transactionId: activeTx?.transactionId !== undefined ? activeTx.transactionId : null,
-      isWaitingForPlug: !!isWaitingForPlug
-    });
-  } catch (err) {
-    console.error("Charger status check error:", err.message);
-    res.status(500).json({ error: "Failed to fetch charger status" });
-  }
-});
-
-/**
- * Helper to poll for a transaction ID in the background if remoteStart didn't return it
- */
-async function pollForTransactionId(chargerId, checkoutId, customerId, paymentMethodId, userIdTag = null) {
-  let transactionId = null;
-  let attempts = 0;
-  const maxAttempts = 30; // 30 * 4s = 120 seconds (background poll is now longer)
-  console.log(`[Poll] Starting background poll for charger ${chargerId} (up to 120s)...`);
-
-  while (!transactionId && attempts < maxAttempts) {
-    await new Promise(r => setTimeout(r, 4000));
-    try {
-      const transactions = await getTransactions();
-      const cid = chargerId.toLowerCase().trim();
-      const fiveMinsAgo = new Date(Date.now() - 5 * 60000);
-
-      const tx = transactions.find(t => {
-        const sid = String(t.stationId || "").toLowerCase().trim();
-        const hasEnded = !!t.endTime;
-        const startedRecently = t.startTime && new Date(t.startTime) > fiveMinsAgo;
-        const isActive = (t.isActive === true || t.isActive === "true" || (!hasEnded && (t.startTime || startedRecently)));
-
-        const matches = sid === cid || sid.includes(cid) || cid.includes(sid);
-        return matches && isActive;
-      });
-
-      if (tx?.transactionId) {
-        transactionId = tx.transactionId;
-        console.log(`[Poll] SUCCESS: Found transactionId ${transactionId} for ${chargerId} on attempt ${attempts + 1}`);
-        await registerSession(transactionId, chargerId, checkoutId, userIdTag, customerId, paymentMethodId);
-      } else {
-        console.log(`[Poll] Attempt ${attempts + 1}/${maxAttempts}: No active tx in ${transactions.length} records for ${chargerId}`);
-      }
-    } catch (e) {
-      console.error(`[Poll] Error on attempt ${attempts + 1}:`, e.message);
-    }
-    attempts++;
-  }
-  if (!transactionId) {
-    console.error(`[Poll] FAILED: Could not find transactionId for ${chargerId} after 120s.`);
-  }
-}
-
-
-/**
- * 🔹 API: Get active session details
+ * 🔹 API: Get active session details (Legacy Support)
  */
 app.get("/api/active-session/:transactionId", async (req, res) => {
-  const { transactionId } = req.params;
-  try {
-    // 1. Check live transactions from Citrine
-    const transactions = await getTransactions();
-    const liveTx = transactions.find(t => t.transactionId === transactionId);
-
-    if (liveTx) {
-      return res.json({
-        transactionId,
-        stationId: liveTx.stationId,
-        isActive: liveTx.isActive,
-        startTime: liveTx.startTime,
-        endTime: liveTx.endTime,
-        totalKwh: liveTx.totalKwh || 0,
-        totalCost: liveTx.totalCost || 0
-      });
-    }
-
-    // 2. Fallback to Database for completed sessions
-    const [rows] = await (await import("./db.js")).default.execute(
-      "SELECT * FROM sessions WHERE transaction_id = ?",
-      [transactionId]
-    );
-    const dbTx = rows[0];
-
-    if (dbTx) {
-      return res.json({
-        transactionId: dbTx.transaction_id,
-        stationId: dbTx.charger_id,
-        isActive: dbTx.status !== 'completed',
-        startTime: dbTx.start_time,
-        endTime: dbTx.end_time,
-        totalKwh: dbTx.kwh || 0,
-        totalCost: dbTx.cost || 0
-      });
-    }
-
-    res.status(404).json({ error: "Session not found" });
-  } catch (err) {
-    console.error("Fetch session error:", err.message);
-    res.status(500).json({ error: "Failed to fetch session details" });
-  }
+  res.redirect(301, `/api/v1/charger/session/${req.params.transactionId}`);
 });
 
 /**
- * 🔹 API: Stop charging session
+ * 🔹 API: Stop charging session (Legacy Support)
  */
 app.get("/api/stop-charging/:chargerId/:transactionId", authenticateToken, async (req, res) => {
-  const { chargerId, transactionId } = req.params;
-  try {
-    await remoteStop(chargerId, transactionId);
-    res.json({ success: true, message: "Stop command sent" });
-  } catch (err) {
-    console.error("Stop charging error:", err.message);
-    res.status(500).json({ error: "Failed to stop charging", details: err.message });
-  }
-});
-
-/**
- * 🔹 API: Direct start for returning customers (skips Stripe Checkout)
- * Requires: ?email=... query param. Verifies saved card exists, then starts charging.
- */
-app.get("/api/start-direct/:chargerId", authenticateToken, async (req, res) => {
-  const { chargerId } = req.params;
-  const customerEmail = req.query.email;
-  console.log(`[DirectStart-Debug] Incoming request for charger ${chargerId}, email ${customerEmail}`);
-  if (!customerEmail) return res.status(400).json({ error: "email required" });
-
-  try {
-    const { stripe } = await import("./stripeService.js");
-
-    // Find existing Stripe customer
-    const customers = await stripe.customers.list({ email: customerEmail, limit: 1 });
-    if (!customers.data.length) {
-      return res.json({ canDirect: false, reason: "No Stripe customer found" });
-    }
-    const customer = customers.data[0];
-
-    // Check for a saved payment method (card or link)
-    const [cardPms, linkPms] = await Promise.all([
-      stripe.paymentMethods.list({ customer: customer.id, type: "card", limit: 1 }),
-      stripe.paymentMethods.list({ customer: customer.id, type: "link", limit: 1 }),
-    ]);
-    const pm = cardPms.data[0] || linkPms.data[0];
-    if (!pm) {
-      return res.json({ canDirect: false, reason: "No saved payment method" });
-    }
-
-    // Register pending session immediately with customer + PM
-    const pendingId = "pending_direct_" + Date.now();
-    const idTag = req.user.idTag || await getOrCreateIdTag(req.user.email);
-    req.user.idTag = idTag;
-
-    console.log(`[DirectStart-Debug] Registering manual start for ${chargerId} (pendingId: ${pendingId}, idTag: ${idTag})`);
-    await registerSession(pendingId, chargerId, null, idTag, customer.id, pm.id);
-
-    // Fire remoteStart async
-    console.log(`[DirectStart] Starting charger ${chargerId} for customer ${customer.id} (pm: ${pm.id}, idTag: ${idTag})`);
-    remoteStart(chargerId, idTag)
-      .then(result => {
-        console.log(`[DirectStart] remoteStart response for ${chargerId}:`, JSON.stringify(result));
-        const transactionId = result?.transactionId;
-        if (transactionId) {
-          console.log(`[DirectStart] Got transactionId ${transactionId}`);
-          registerSession(transactionId, chargerId, null, idTag, customer.id, pm.id);
-        } else {
-          console.log(`[DirectStart] No immediate transactionId — starting background poll`);
-          pollForTransactionId(chargerId, null, customer.id, pm.id, idTag);
-        }
-      })
-      .catch(err => {
-        if (err.message.startsWith("OCPP_ERROR:")) {
-          console.error(`[DirectStart] remoteStart failed for ${chargerId} with OCPP error: ${err.message}. Skipping poll.`);
-        } else {
-          console.error("[DirectStart] remoteStart error:", err.message);
-        }
-      });
-
-    res.json({ canDirect: true });
-  } catch (err) {
-    console.error("Direct start error:", err.message);
-    res.status(500).json({ error: "Failed to start direct charging" });
-  }
-});
-
-/**
- * 🔹 API: Get final bill for a session (polls until billing is complete)
- */
-app.get("/api/session-bill/:transactionId", authenticateToken, async (req, res) => {
-  const { transactionId } = req.params;
-  try {
-    const pool = (await import("./db.js")).default;
-    const [rows] = await pool.execute(
-      "SELECT kwh, cost, final_charged, status FROM sessions WHERE transaction_id = ?",
-      [transactionId]
-    );
-    if (!rows.length) return res.status(404).json({ error: "Session not found" });
-    const s = rows[0];
-    res.json({
-      kwh: s.kwh || 0,
-      cost: s.cost || 0,
-      finalCharged: !!s.final_charged,
-      status: s.status,
-    });
-  } catch (err) {
-    console.error("Session bill error:", err.message);
-    res.status(500).json({ error: "Failed to get session bill" });
-  }
+  res.redirect(301, `/api/v1/charger/stop?chargerId=${req.params.chargerId}&transactionId=${req.params.transactionId}`);
 });
 
 /**
@@ -560,56 +245,6 @@ app.get("/create-session/:chargerId/:userIdTag", authenticateToken, async (req, 
 
 
 
-async function startCharging(chargerId, userIdTag) {
-  console.log(`[Server] Starting charging sequence for ${chargerId} with user ${userIdTag}`);
-
-  try {
-    // Register as pending_start immediately so isWaitingForPlug triggers right away
-    const pendingId = "pending_start_" + Date.now();
-    await registerSession(pendingId, chargerId, null, userIdTag);
-
-    const res = await remoteStart(chargerId, userIdTag);
-
-    if (res[0]?.success || res.status === 'Accepted' || res.status === 'Accepted' || (Array.isArray(res) && res[0]?.status === 'Accepted')) {
-      console.log("Charging remote start command accepted!", res);
-    } else {
-      console.error("Failed to start charging:", res);
-      // Cleanup the pending session if it failed immediately
-      await pool.execute("DELETE FROM sessions WHERE transaction_id = ?", [pendingId]);
-      return;
-    }
-
-    let transactionId = null;
-    let attempts = 0;
-    const maxAttempts = 12;
-
-    while (!transactionId && attempts < maxAttempts) {
-      console.log(`Polling for transaction ID (attempt ${attempts + 1}/${maxAttempts})...`);
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      const transactions = await getTransactions();
-
-      const latestTx = transactions
-        .filter(tx => tx.stationId === chargerId && tx.isActive === true)
-        .sort((a, b) => new Date(b.startTime) - new Date(a.startTime))[0];
-
-      if (latestTx) {
-        transactionId = latestTx.transactionId;
-        console.log("Found Transaction ID:", transactionId);
-      }
-      attempts++;
-    }
-
-    if (transactionId) {
-      console.log("Registering session in DB with ID:", transactionId);
-      await registerSession(transactionId, chargerId, null, userIdTag);
-    } else {
-      console.error("Failed to retrieve transaction ID after polling.");
-    }
-  } catch (err) {
-    console.error("Error in startCharging:", err.message);
-  }
-}
 
 
 // 🔹 Stripe placeholder routes

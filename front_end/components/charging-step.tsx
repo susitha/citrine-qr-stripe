@@ -139,6 +139,10 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const isMounted = useRef(true)
 
+  useEffect(() => {
+    console.log(`[Charging-Debug] Component mounted. ChargerID: ${chargerId}, PaidFromStripe: ${paidFromStripe}, HasPaidThisSession: ${hasPaidThisSession}`);
+  }, [chargerId, paidFromStripe, hasPaidThisSession]);
+
   const handleAuthError = useCallback(() => {
     toast.error("Session expired", { description: "Please sign in again to continue." })
 
@@ -208,7 +212,9 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
   const pollSession = useCallback(async (transactionId: string) => {
     if (statusRef.current !== "charging") return
     try {
-      const response = await fetch(`/api/charging?transactionId=${transactionId}`)
+      const response = await fetch(`/api/charging?transactionId=${transactionId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      })
       const data = await response.json()
 
       if (data.session) {
@@ -276,15 +282,16 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
         const statusData = await statusRes.json()
 
-        console.log(`[Charging] Poll attempt ${attempts + 1}/${maxAttempts} for ${chargerId}:`, statusData.chargerStatus)
+        console.log(`[Charging-Debug] Poll for ${chargerId}:`, statusData);
 
         // Sync the plug state — if it's no longer waiting, this should be false
         setIsWaitingForPlug(!!statusData.chargerStatus?.isWaitingForPlug)
 
         if (statusData.chargerStatus?.transactionId !== null && statusData.chargerStatus?.transactionId !== undefined) {
-          transactionId = String(statusData.chargerStatus.transactionId)
-          console.log(`[Charging] CONFIRMED: transactionId=${transactionId}`)
-          setIsWaitingForPlug(false) // Safety override if tx found
+          const txId = String(statusData.chargerStatus.transactionId)
+          console.log(`[Charging-Debug] SUCCESS: Found transactionId=${txId}. Transitioning to charging...`)
+          transactionId = txId
+          setIsWaitingForPlug(false)
         }
       } catch (err) {
         console.error(`[Charging] Poll error on attempt ${attempts + 1}:`, err)
@@ -373,11 +380,15 @@ export function ChargingStep({ phone, chargerId, token, onReset, paidFromStripe,
         const statusRes = await fetch(`/api/charging?chargerId=${chargerId}`)
         const statusData = await statusRes.json()
 
+        console.log(`[Charging-Debug] Start poll for ${chargerId}:`, statusData);
+
         // Sync the plug state
         setIsWaitingForPlug(!!statusData.chargerStatus?.isWaitingForPlug)
 
         if (statusData.chargerStatus?.transactionId) {
-          transactionId = statusData.chargerStatus.transactionId
+          const txId = String(statusData.chargerStatus.transactionId)
+          console.log(`[Charging-Debug] SUCCESS: Found transactionId=${txId}`)
+          transactionId = txId
           setIsWaitingForPlug(false) // Safety override
         }
         attempts++

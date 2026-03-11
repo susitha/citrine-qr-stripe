@@ -15,10 +15,20 @@ export async function GET(request: Request) {
         return NextResponse.json({ error: "transactionId is required" }, { status: 400 })
     }
 
-    const res = await fetch(`${BACKEND_URL}/api/session-bill/${encodeURIComponent(transactionId)}`, {
+    const res = await fetch(`${BACKEND_URL}/api/v1/charger/session/${encodeURIComponent(transactionId)}`, {
         headers: { Authorization: token || "" },
     })
-    const data = await res.json()
-    if (!res.ok) return NextResponse.json({ error: data.error }, { status: res.status })
-    return NextResponse.json(data)
+    const result = await res.json()
+    if (!res.ok || !result.success) {
+        return NextResponse.json({ error: result.error || "Failed to fetch bill" }, { status: res.status })
+    }
+
+    // Map to the object expected by the frontend
+    const bill = result.data;
+    return NextResponse.json({
+        finalCharged: !!bill.final_charged || bill.status === 'completed',
+        kwh: bill.totalKwh || bill.kwh || 0,
+        cost: bill.totalCost || bill.cost || 0,
+        transactionId: bill.transactionId
+    })
 }

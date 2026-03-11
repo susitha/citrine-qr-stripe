@@ -44,6 +44,8 @@ export async function createCheckoutSession(chargerId, frontendBase, customerEma
     metadata: { chargerId, customerEmail: customerEmail || "", idTag: idTag || "" },
   };
 
+  console.log(`[StripeService] Session URLs: success=${sessionParams.success_url}, cancel=${sessionParams.cancel_url}`);
+
   if (customer) sessionParams.customer = customer.id;
   else if (customerEmail) sessionParams.customer_email = customerEmail;
 

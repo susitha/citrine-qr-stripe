@@ -9,42 +9,39 @@ const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:3000"
  */
 export async function POST(request: Request) {
   try {
-    const { phone, chargerId, token } = await request.json()
+    const { chargerId, token } = await request.json()
 
-    if (!phone || !chargerId || !token) {
+    if (!chargerId || !token) {
       return NextResponse.json(
-        { error: "Phone, charger ID, and auth token are required" },
+        { error: "chargerId and auth token are required" },
         { status: 400 }
       )
     }
 
-    // Use a fixed OCPP idTag configured on the backend, not the user's email/phone
-    const idTag = process.env.OCPP_ID_TAG || "0123456789ABCD"
-    const url = `${BACKEND_URL}/create-session/${chargerId}/${encodeURIComponent(idTag)}`;
-    console.log(`[Proxy-Debug] GET ${url}`);
+    const url = `${BACKEND_URL}/api/v1/charger/start`;
+    console.log(`[Proxy-Debug] POST ${url}`);
 
-    const response = await fetch(
-      url,
-      {
-        method: "GET",
-        headers: { Authorization: `Bearer ${token}` },
-      }
-    )
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ chargerId })
+    })
 
-    const data = await response.json()
+    const result = await response.json()
 
-    if (!response.ok) {
+    if (!response.ok || !result.success) {
       return NextResponse.json(
-        { error: data.error || "Failed to start charging session" },
+        { error: result.error || "Failed to start charging session" },
         { status: response.status }
       )
     }
 
-    // Poll for the transaction ID (Express resolves this in background)
-    // We return immediately and let the client poll /api/charging?chargerId=...
     return NextResponse.json({
       success: true,
-      message: data.message,
+      data: result.data,
       chargerId,
     })
   } catch (err) {
@@ -65,6 +62,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url)
     const chargerId = searchParams.get("chargerId")
     const transactionId = searchParams.get("transactionId")
+    const token = request.headers.get("Authorization")
 
     if (!chargerId && !transactionId) {
       return NextResponse.json(
@@ -76,29 +74,32 @@ export async function GET(request: Request) {
     // If we have a transactionId, fetch session directly
     if (transactionId) {
       const response = await fetch(
-        `${BACKEND_URL}/api/active-session/${transactionId}`
+        `${BACKEND_URL}/api/v1/charger/session/${transactionId}`,
+        { headers: { Authorization: token || "" } }
       )
-      const data = await response.json()
+      const result = await response.json()
 
-      if (!response.ok) {
-        return NextResponse.json({ error: data.error }, { status: response.status })
+      if (!response.ok || !result.success) {
+        return NextResponse.json({ error: result.error || "Session check failed" }, { status: response.status })
       }
 
-      return NextResponse.json({ session: data })
+      // Maintain legacy response mapping if needed, or return raw data
+      return NextResponse.json({ session: result.data })
     }
 
     // Otherwise, get charger status (find transactionId)
-    const url = `${BACKEND_URL}/api/charger-status/${chargerId}`;
+    const url = `${BACKEND_URL}/api/v1/charger/status/${chargerId}`;
     console.log(`[Proxy-Debug] GET ${url}`);
 
     const response = await fetch(url)
-    const data = await response.json()
+    const result = await response.json()
 
-    if (!response.ok) {
-      return NextResponse.json({ error: data.error }, { status: response.status })
+    if (!response.ok || !result.success) {
+      return NextResponse.json({ error: result.error || "Status check failed" }, { status: response.status })
     }
 
-    return NextResponse.json({ chargerStatus: data })
+    // Backwards compatibility for the frontend 'chargerStatus' expectation
+    return NextResponse.json({ chargerStatus: result.data })
   } catch (err) {
     console.error("[Charging GET] Error:", err)
     return NextResponse.json(
@@ -123,26 +124,31 @@ export async function PATCH(request: Request) {
       )
     }
 
+    // Notice: V1 endpoint for stop is a POST, but we keep PATCH in the proxy for web frontend compat
     const response = await fetch(
-      `${BACKEND_URL}/api/stop-charging/${chargerId}/${transactionId}`,
+      `${BACKEND_URL}/api/v1/charger/stop`,
       {
-        method: "GET",
-        headers: { Authorization: `Bearer ${token}` },
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ chargerId, transactionId })
       }
     )
 
-    const data = await response.json()
+    const result = await response.json()
 
-    if (!response.ok) {
+    if (!response.ok || !result.success) {
       return NextResponse.json(
-        { error: data.error || "Failed to stop charging" },
+        { error: result.error || "Failed to stop charging" },
         { status: response.status }
       )
     }
 
     return NextResponse.json({
       success: true,
-      message: data.message,
+      message: result.data.message || "Stop command sent",
     })
   } catch (err) {
     console.error("[Charging PATCH] Error:", err)

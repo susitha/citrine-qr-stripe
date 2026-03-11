@@ -14,19 +14,25 @@ export async function POST(request: Request) {
     }
 
     // Forward to Express — Cognito verifies OTP against stored session
-    const response = await fetch(`${BACKEND_URL}/api/auth/verify-otp`, {
+    const response = await fetch(`${BACKEND_URL}/api/v1/auth/verify-otp`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, phone, otp: code, session }),
     })
 
-    const data = await response.json()
+    const result = await response.json()
 
-    if (!response.ok) {
-      return NextResponse.json({ error: data.error || "Verification failed" }, { status: response.status })
+    if (!response.ok || !result.success) {
+      return NextResponse.json({
+        error: result.error || "Verification failed"
+      }, { status: response.status })
     }
 
-    return NextResponse.json({ success: true, message: "Verified", token: data.token })
+    return NextResponse.json({
+      success: true,
+      message: "Verified",
+      token: result.data.token
+    })
   } catch (err) {
     console.error("[OTP Verify] Error:", err)
     return NextResponse.json({ error: "Failed to verify OTP" }, { status: 500 })

@@ -10,19 +10,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email or phone is required" }, { status: 400 })
     }
 
-    const response = await fetch(`${BACKEND_URL}/api/auth/request-otp`, {
+    const response = await fetch(`${BACKEND_URL}/api/v1/auth/request-otp`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, phone }),
     })
 
-    const data = await response.json()
-    if (!response.ok) {
-      return NextResponse.json({ error: data.error || "Failed to send OTP" }, { status: response.status })
+    const result = await response.json()
+    if (!response.ok || !result.success) {
+      return NextResponse.json({ error: result.error || "Failed to send OTP" }, { status: response.status })
     }
 
     // Return Cognito session — needed for the verify step
-    return NextResponse.json({ success: true, message: data.message, session: data.session })
+    return NextResponse.json({
+      success: true,
+      message: result.data.message,
+      session: result.data.session
+    })
   } catch (err) {
     console.error("[OTP Send] Error:", err)
     return NextResponse.json({ error: "Failed to send OTP" }, { status: 500 })

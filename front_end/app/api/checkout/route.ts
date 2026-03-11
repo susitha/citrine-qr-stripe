@@ -18,24 +18,37 @@ export async function GET(request: Request) {
             return NextResponse.json({ error: "chargerId is required" }, { status: 400 })
         }
 
-        const url = `${BACKEND_URL}/api/checkout/${encodeURIComponent(chargerId)}?email=${encodeURIComponent(email)}`
-        console.log(`[Proxy-Debug] GET ${url}`);
+        const url = `${BACKEND_URL}/api/v1/billing/checkout`
+        console.log(`[Proxy-Debug] POST ${url}`);
+
+        // Detect the original origin from the browser's request to this proxy
+        const origin = request.headers.get("origin") || request.headers.get("referer");
+        let frontendOrigin: string | undefined;
+        if (origin) {
+            try {
+                frontendOrigin = new URL(origin).origin;
+            } catch { /* invalid header */ }
+        }
 
         const response = await fetch(url, {
-            method: "GET",
-            headers: { Authorization: token || "" },
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: token || ""
+            },
+            body: JSON.stringify({ chargerId, frontendOrigin })
         })
 
-        const data = await response.json()
+        const result = await response.json()
 
-        if (!response.ok) {
+        if (!response.ok || !result.success) {
             return NextResponse.json(
-                { error: data.error || "Failed to create checkout session" },
+                { error: result.error || "Failed to create checkout session" },
                 { status: response.status }
             )
         }
 
-        return NextResponse.json({ url: data.url })
+        return NextResponse.json({ url: result.data.checkoutUrl })
     } catch (err) {
         console.error("[Checkout Proxy] Error:", err)
         return NextResponse.json({ error: "Failed to create checkout session" }, { status: 500 })
