@@ -52,7 +52,7 @@ const router = express.Router();
  *                       type: string
  */
 router.post("/checkout", authenticateToken, async (req, res) => {
-    const { chargerId } = req.body;
+    const { chargerId, platform } = req.body;
     const customerEmail = req.user.email;
 
     if (!chargerId) {
@@ -66,20 +66,22 @@ router.post("/checkout", authenticateToken, async (req, res) => {
     try {
         const idTag = req.user.idTag || await getOrCreateIdTag(customerEmail);
 
-        // Dynamic origin detection for redirects
-        // If the frontend explicitly specifies the origin (needed for proxies), use it.
         let frontendBase = req.body.frontendOrigin;
-
         if (!frontendBase) {
-            const origin = req.get('origin') || req.get('referer');
-            frontendBase = origin ? new URL(origin).origin : (process.env.FRONTEND_URL || "http://localhost:3001");
+            const origin = req.get("origin") || req.get("referer");
+            frontendBase = origin
+                ? new URL(origin).origin
+                : (process.env.FRONTEND_URL || "http://localhost:3001");
         }
 
-        console.log(`[v1/Billing] Creating checkout for ${chargerId}. Redirecting back to: ${frontendBase}`);
+        const session = await createCheckoutSession(
+            chargerId,
+            frontendBase,
+            customerEmail,
+            idTag,
+            platform
+        );
 
-        const session = await createCheckoutSession(chargerId, frontendBase, customerEmail, idTag);
-
-        // Pre-register so charger shows "Occupied"
         await registerSession("pending_pre_" + session.id, chargerId, session.id, idTag);
 
         res.json({

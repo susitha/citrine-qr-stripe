@@ -36,7 +36,12 @@ export async function GET(request: Request) {
                 "Content-Type": "application/json",
                 Authorization: token || ""
             },
-            body: JSON.stringify({ chargerId, frontendOrigin })
+            body: JSON.stringify({
+                chargerId,
+                frontendOrigin,
+                platform: "web"
+            })
+
         })
 
         const result = await response.json()

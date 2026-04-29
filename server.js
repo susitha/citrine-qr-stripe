@@ -289,6 +289,71 @@ app.get("/create-session/:chargerId/:userIdTag", authenticateToken, async (req, 
 app.get("/success", (req, res) => res.send("Payment Successful! You can return to your dashboard."));
 app.get("/cancel", (req, res) => res.send("Payment Canceled."));
 
+
+app.get("/checkout_redirect/success", (req, res) => {
+  const chargerId = req.query.chargerId || "";
+  const sessionId = req.query.session_id || "";
+
+  const appURL =
+    `ev-charge://checkout?status=success` +
+    `&chargerId=${encodeURIComponent(chargerId)}` +
+    `&session_id=${encodeURIComponent(sessionId)}`;
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Returning to Electron America</title>
+    <script>
+      window.location.replace(${JSON.stringify(appURL)});
+      setTimeout(function () {
+        window.location.href = ${JSON.stringify(appURL)};
+      }, 800);
+    </script>
+  </head>
+  <body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#111;color:#fff;display:grid;place-items:center;min-height:100vh;margin:0;">
+    <div style="max-width:420px;padding:24px;border-radius:16px;background:#1c1c1e;text-align:center;">
+      <h1>Payment successful</h1>
+      <p>Returning to the app...</p>
+      <p><a href="${appURL}" style="color:#ffd60a;">Open Electron America</a></p>
+    </div>
+  </body>
+</html>`);
+});
+
+app.get("/checkout_redirect/cancel", (req, res) => {
+  const chargerId = req.query.chargerId || "";
+
+  const appURL =
+    `ev-charge://checkout?status=canceled` +
+    `&chargerId=${encodeURIComponent(chargerId)}`;
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Returning to Electron America</title>
+    <script>
+      window.location.replace(${JSON.stringify(appURL)});
+      setTimeout(function () {
+        window.location.href = ${JSON.stringify(appURL)};
+      }, 800);
+    </script>
+  </head>
+  <body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#111;color:#fff;display:grid;place-items:center;min-height:100vh;margin:0;">
+    <div style="max-width:420px;padding:24px;border-radius:16px;background:#1c1c1e;text-align:center;">
+      <h1>Checkout canceled</h1>
+      <p>Returning to the app...</p>
+      <p><a href="${appURL}" style="color:#ffd60a;">Open Electron America</a></p>
+    </div>
+  </body>
+</html>`);
+});
+
 // 🔹 Prevent 404 for favicon
 app.get("/favicon.ico", (req, res) => res.status(204).end());
 
@@ -304,7 +369,11 @@ app.use((req, res) => {
 /**
  * 🔹 Start system
  */
+
+
 startBillingLoop();
 app.listen(PORT, () =>
   console.log(`🚀 Express server running on http://localhost:${PORT}`)
 );
+
+
