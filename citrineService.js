@@ -22,8 +22,7 @@ export async function remoteStart(chargerId, idTag = "DRIVER_001") {
       Authorization: `Bearer ${process.env.CITRINE_API_KEY}`,
     },
     body: JSON.stringify({
-      idTag: idTag,
-      connectorId: 1,
+      idTag: idTag
     }),
   });
 
