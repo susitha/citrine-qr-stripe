@@ -4,8 +4,8 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "concurrently \"node server.js\" \"cd front_end && NEXT_WEBPACK=1 yarn dev --port 3001\""
+    "start": "node --dns-result-order=ipv4first server.js",
+    "dev": "concurrently \"node --dns-result-order=ipv4first server.js\" \"cd front_end && NEXT_WEBPACK=1 yarn dev --port 3001\""
   },
   "dependencies": {
     "@aws-sdk/client-cognito-identity-provider": "^3.993.0",

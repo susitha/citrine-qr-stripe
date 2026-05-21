@@ -1,3 +1,23 @@
+import dns from "dns";
+
+// Force IPv4 globally for all Node.js network operations to bypass IPv6 DNS timeouts on macOS
+const originalLookup = dns.lookup;
+dns.lookup = function (hostname, options, callback) {
+  if (typeof options === "function") {
+    callback = options;
+    options = {};
+  }
+  if (typeof options === "number") {
+    options = { family: options };
+  } else if (!options) {
+    options = {};
+  }
+  if (options.family === undefined || options.family === 0) {
+    options.family = 4;
+  }
+  return originalLookup.call(dns, hostname, options, callback);
+};
+
 import express from "express";
 import dotenv from "dotenv";
 import QRCode from "qrcode";
